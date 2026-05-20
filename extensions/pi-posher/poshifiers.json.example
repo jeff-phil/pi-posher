@@ -1,0 +1,111 @@
+{
+  "poshifiers": [
+    {
+      "name": "go",
+      "include": ["**/*.go"],
+      "exclude": ["vendor/**"],
+      "anchors": ["go.mod"],
+      "tools": [
+        {
+          "cmd": "gofmt",
+          "args": ["-w", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 25000
+        },
+        {
+          "cmd": "golangci-lint",
+          "args": ["run", "--new-from-rev=HEAD", "--timeout=25s", "./{relDir}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ]
+    },
+    {
+      "name": "python",
+      "include": ["**/*.py"],
+      "anchors": ["pyproject.toml", "ruff.toml"],
+      "tools": [
+        {
+          "cmd": "uv",
+          "args": ["run", "ruff", "format", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 25000
+        },
+        {
+          "cmd": "uv",
+          "args": ["run", "ruff", "check", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ]
+    },
+    {
+      "name": "typescript",
+      "include": ["**/*.{ts,tsx,js,jsx,mjs,cjs,svelte}"],
+      "exclude": [
+        "node_modules/**",
+        "dist/**",
+        ".next/**",
+        ".svelte-kit/**",
+        "build/**"
+      ],
+      "anchors": ["package.json"],
+      "tools": [
+        {
+          "cmd": "prettier",
+          "args": ["--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 25000
+        },
+        {
+          "cmd": "eslint",
+          "args": ["{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ]
+    },
+    {
+      "name": "json",
+      "include": ["**/*.json"],
+      "exclude": ["node_modules/**", "package-lock.json"],
+      "anchors": ["package.json"],
+      "tools": [
+        {
+          "cmd": "prettier",
+          "args": ["--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ]
+    },
+    {
+      "name": "yaml",
+      "include": ["**/*.{yaml,yml}"],
+      "exclude": ["node_modules/**"],
+      "anchors": ["package.json"],
+      "tools": [
+        {
+          "cmd": "prettier",
+          "args": ["--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ]
+    },
+    {
+      "name": "markdown",
+      "include": ["**/*.md"],
+      "exclude": ["node_modules/**"],
+      "anchors": ["package.json"],
+      "tools": [
+        {
+          "cmd": "prettier",
+          "args": ["--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ]
+    }
+  ]
+}

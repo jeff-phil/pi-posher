@@ -1,0 +1,34 @@
+{
+  "name": "pi-posher",
+  "version": "0.1.4",
+  "description": "Pi extension that automatically runs commands after agent writes and edits",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "format",
+    "lint",
+    "sast",
+    "conversions",
+    "poshify"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/pi-posher/index.ts"
+    ]
+  },
+  "scripts": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

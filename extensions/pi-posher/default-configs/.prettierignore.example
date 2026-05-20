@@ -1,0 +1,59 @@
+*.lock
+*.min.js
+*.md
+pnpm-lock.yaml
+xcode
+
+# Dependencies
+node_modules
+
+# Build output
+dist
+build
+coverage
+.next
+.nuxt
+.svelte-kit
+out
+
+# Package manager files
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Generated files
+*.min.js
+*.min.css
+*.map
+
+# Environment files
+.env
+.env.*
+
+# Logs
+*.log
+
+# Cache/temp
+.cache
+.temp
+tmp
+
+# IDE/editor
+.vscode
+.idea
+
+# OS files
+.DS_Store
+
+# Static/generated assets
+public/build
+storybook-static
+
+# Monorepo
+**/node_modules
+**/dist
+**/build
+**/.next
+**/.turbo
+**/coverage
+**/.svelte-kit
