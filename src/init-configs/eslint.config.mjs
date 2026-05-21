@@ -7,9 +7,7 @@ import globals from 'globals';
 export default [
   // Global Ignores
   {
-    ignores: [
-      '{node_modules,dist,build,.svelte-kit,npm-global,npm,.local}/',
-    ],
+    ignores: ['{node_modules,dist,build,.svelte-kit,npm-global,npm,.local}/'],
   },
 
   // Recommended JS Rules

@@ -124,7 +124,7 @@ function isPathIncluded(relativePath, include, exclude) {
 // ── template ──────────────────────────────────────────────────────────
 
 const PLACEHOLDER_PATTERN =
-  /\{(workspace|root|file|relFile|dir|relDir|config|configDir)\}/g;
+  /\{(workspace|root|file|relFile|dir|relDir|config|configDir|name)\}/g;
 
 function applyTemplate(input, values) {
   return input.replace(PLACEHOLDER_PATTERN, (_match, key) => values[key] ?? '');
@@ -189,8 +189,34 @@ function sha256(content) {
 }
 
 function getExtensionDataDir() {
-  const agentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
+  const agentDir =
+    process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
   return path.join(agentDir, 'extensions', 'pi-posher');
+}
+
+function getInitConfigsDir() {
+  const __dirname = path.dirname(new URL(import.meta.url).pathname);
+  return path.join(__dirname, 'init-configs');
+}
+
+async function ensureUserConfigDir() {
+  const userDir = getExtensionDataDir();
+  if (!fsSync.existsSync(userDir)) {
+    await fs.mkdir(userDir, { recursive: true });
+  }
+  return userDir;
+}
+
+async function ensureGlobalConfig(ctx) {
+  const configFile = path.join(getExtensionDataDir(), 'poshifiers.json');
+  const defaultSource = path.join(getInitConfigsDir(), 'poshifiers.json.default');
+  if (!fsSync.existsSync(configFile) && fsSync.existsSync(defaultSource)) {
+    await fs.mkdir(path.dirname(configFile), { recursive: true });
+    await fs.copyFile(defaultSource, configFile);
+    if (ctx?.hasUI) {
+      ctx.ui.notify(`Poshify defaults installed to ${getExtensionDataDir()}`, 'info');
+    }
+  }
 }
 
 async function readTrustStore(storePath) {
@@ -529,13 +555,24 @@ function cleanCommand(value) {
   const object = asObject(value);
   if (!object || typeof object.cmd !== 'string' || object.cmd.trim() === '')
     return undefined;
+  const rawTimeout = cleanNumber(object.timeoutMs);
   return {
     cmd: object.cmd,
     args: cleanStringArray(object.args),
     cwd: typeof object.cwd === 'string' ? object.cwd : undefined,
     env: cleanStringRecord(object.env),
     config: typeof object.config === 'string' ? object.config : undefined,
-    timeoutMs: cleanNumber(object.timeoutMs),
+    timeoutMs: rawTimeout ?? 15000,
+  };
+}
+
+function cleanInitSetup(object) {
+  if (!object || typeof object !== 'object') return undefined;
+  const setup = asObject(object['init-setup']);
+  if (!setup) return undefined;
+  return {
+    'init-configs': cleanStringArray(setup['init-configs']),
+    'init-tools': cleanCommands(setup['init-tools']),
   };
 }
 
@@ -552,6 +589,7 @@ function cleanCommands(tools) {
 function cleanPoshifier(object) {
   if (typeof object.name !== 'string' || object.name.trim() === '') return undefined;
   const tools = cleanCommands(object.tools);
+  const initSetup = cleanInitSetup(object);
   return {
     name: object.name,
     include: cleanStringArray(object.include),
@@ -559,6 +597,7 @@ function cleanPoshifier(object) {
     anchors: cleanStringArray(object.anchors),
     maxFileSizeBytes: cleanNumber(object.maxFileSizeBytes),
     tools,
+    'init-setup': initSetup,
   };
 }
 
@@ -932,83 +971,80 @@ async function runPoshifyBatch(ctx, inputPath) {
     .join('\n\n');
 }
 
-async function runInitDefaults(ctx) {
-  const piCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
-  if (!piCodingAgentDir) {
-    throw new Error('PI_CODING_AGENT_DIR environment variable is not set');
-  }
-
-  const defaultsDir = path.join(
-    piCodingAgentDir,
-    'extensions',
-    'pi-posher',
-    'default-configs',
-  );
+async function runInitByName(ctx, poshifier, name) {
   const cwd = ctx.cwd;
-
-  let entries;
-  try {
-    entries = await fs.readdir(defaultsDir, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      throw new Error(`Default configs directory not found: ${defaultsDir}`, {
-        cause: error,
-      });
-    }
-    throw error;
+  const initSetup = poshifier?.['init-setup'];
+  if (!initSetup) {
+    throw new Error(`No init-setup defined for "${name}".`);
   }
+  const configs = initSetup['init-configs'] ?? [];
+  const tools = initSetup['init-tools'] ?? [];
+  const bundledDir = getInitConfigsDir();
+  const userDir = getExtensionDataDir();
 
-  const sourceFiles = entries
-    .filter((e) => e.isFile() && !e.name.endsWith('.example'))
-    .map((e) => e.name);
-
-  const conflicts = [];
-  for (const fileName of sourceFiles) {
-    const destPath = path.join(cwd, fileName);
-    if (fsSync.existsSync(destPath)) {
-      conflicts.push(fileName);
+  // Seed user-level init-configs from bundled templates if not present
+  await ensureUserConfigDir();
+  await fs.mkdir(path.join(userDir, name), { recursive: true });
+  for (const relPath of configs) {
+    const templated = relPath.replace(/\{name\}/g, name);
+    const destUser = path.join(userDir, templated);
+    const srcBundled = path.join(bundledDir, templated);
+    if (!fsSync.existsSync(destUser) && fsSync.existsSync(srcBundled)) {
+      const destParent = path.dirname(destUser);
+      await fs.mkdir(destParent, { recursive: true });
+      await fs.copyFile(srcBundled, destUser);
     }
-  }
-
-  if (conflicts.length > 0) {
-    throw new Error(
-      `Cannot copy default configs — file(s) already exist in ${cwd}: ${conflicts.join(', ')}`,
-    );
   }
 
   const copied = [];
-  for (const fileName of sourceFiles) {
-    const srcPath = path.join(defaultsDir, fileName);
+  const skipped = [];
+
+  for (const relPath of configs) {
+    const templated = relPath.replace(/\{name\}/g, name);
+    const srcPath = path.join(userDir, templated);
+    if (!fsSync.existsSync(srcPath)) {
+      throw new Error(
+        `Init config not found for "${name}": ${templated} (expected at ${srcPath})`,
+      );
+    }
+    const fileName = path.basename(templated);
     const destPath = path.join(cwd, fileName);
+    if (fsSync.existsSync(destPath)) {
+      skipped.push(fileName);
+      continue;
+    }
+    const destParent = path.dirname(destPath);
+    await fs.mkdir(destParent, { recursive: true });
     await fs.copyFile(srcPath, destPath);
     copied.push(fileName);
   }
 
-  const installResult = await execDirect(
-    'npm',
-    [
-      'install',
-      '--save-dev',
-      'eslint',
-      '@eslint/js',
-      'globals',
-      'eslint-config-prettier',
-      'eslint-plugin-simple-import-sort',
-      'eslint-plugin-unused-imports',
-    ],
-    { cwd, timeout: 120000, signal: ctx.signal },
-  );
-
-  if (installResult.code !== 0) {
-    const output = commandOutput(installResult);
-    const err = new Error(
-      `npm install failed with exit code ${installResult.code}${installResult.killed ? ' (killed/timeout)' : ''}${output ? ':\n' + output : ''}`,
-    );
-    err.cause = installResult;
-    throw err;
+  // Run init-tools with name placeholder and root=cwd
+  const baseValues = { name, root: cwd };
+  for (const tool of tools) {
+    const command = {
+      ...tool,
+      cmd: applyTemplate(tool.cmd, baseValues),
+      args: applyTemplateArray(tool.args, baseValues),
+      cwd: applyTemplate(tool.cwd ?? cwd, baseValues),
+    };
+    const result = await execDirect(command.cmd, command.args, {
+      cwd: command.cwd,
+      timeout: command.timeoutMs,
+      signal: ctx.signal,
+      env: command.env ? { ...process.env, ...command.env } : undefined,
+    });
+    if (result.code !== 0) {
+      const output = commandOutput(result);
+      const err = new Error(
+        `Init tool "${command.cmd}" failed with exit code ${result.code}${result.killed ? ' (killed/timeout)' : ''}${output ? ':\n' + output : ''}`,
+      );
+      err.cause = result;
+      throw err;
+    }
   }
 
-  return { copied, cwd };
+  return { copied, skipped, cwd };
 }
 
 async function hasEslintConfig(cwd) {
@@ -1055,17 +1091,30 @@ export default async function piPosherExtension(pi) {
   const queue = new PerFileQueue();
   registerDiagnosticsRenderer(pi);
 
+  pi.on('session_start', async (_event, ctx) => {
+    await ensureGlobalConfig(ctx);
+  });
+
   pi.registerCommand('poshify', {
     description:
       'Run configured tools on a file or directory (/poshify --help for more)',
     handler: async (args, ctx) => {
       const trimmed = normalizeUnicodeSpaces(args?.trim() || '');
 
+      const config = await loadPoshifyConfig(ctx);
+      const availableInits = config.items
+        .filter((item) => item?.['init-setup'])
+        .map((item) => item.name)
+        .sort();
+
       const usage = [
         ` /poshify (file|dir)          # Run configured tools for file or directory`,
-        ` /poshify --init              # Install default configs and dependencies`,
+        ` /poshify --init <name>       # Install init configs for a poshifier type`,
         ` /poshify --fix [file|dir]    # Run ESLint --fix`,
         ` /poshify --help              # Show this usage`,
+        ...(availableInits.length > 0
+          ? ['', 'Available --init names: ' + availableInits.join(', ')]
+          : []),
       ].join('\n');
 
       if (trimmed === '' || trimmed === '--help') {
@@ -1081,12 +1130,47 @@ export default async function piPosherExtension(pi) {
         return;
       }
 
-      if (trimmed === '--init') {
+      if (trimmed === '--init' || trimmed.startsWith('--init ')) {
+        const initName = trimmed.slice(5).trim();
+        if (!initName) {
+          pi.sendMessage(
+            {
+              customType: 'pi-posher',
+              content: '',
+              display: true,
+              details: {
+                path: ctx.cwd,
+                summary: `Usage: /poshify --init <name>\n\n${availableInits.length > 0 ? 'Available: ' + availableInits.join(', ') : 'No init setups configured.'}`,
+              },
+            },
+            { deliverAs: 'steer' },
+          );
+          return;
+        }
+        const poshifier = config.items.find((item) => item.name === initName);
         let summary;
         try {
-          const result = await runInitDefaults(ctx);
-          const fileList = result.copied.length > 0 ? result.copied.join(', ') : 'none';
-          summary = `${result.cwd} had ${result.copied.length} file(s) added (${fileList}) and required packages installed (npm install --save-dev eslint @eslint/js globals eslint-config-prettier eslint-plugin-simple-import-sort eslint-plugin-unused-imports).`;
+          if (!poshifier) {
+            summary = `⚠️ No poshifier named "${initName}" found.${config.warnings.length > 0 ? '\n' + config.warnings.join('\n') : ''}`;
+          } else if (!poshifier['init-setup']) {
+            summary = `⚠️ Poshifier "${initName}" has no init-setup defined.`;
+          } else {
+            const result = await runInitByName(ctx, poshifier, initName);
+            const parts = [];
+            if (result.copied.length > 0)
+              parts.push(`Copied: ${result.copied.join(', ')}`);
+            if (result.skipped.length > 0)
+              parts.push(`Skipped (already exist): ${result.skipped.join(', ')}`);
+            if (result.copied.length === 0 && result.skipped.length === 0)
+              parts.push('No files to copy.');
+            summary = `${result.cwd}\n${parts.join('\n')}`;
+            if (ctx.hasUI) {
+              ctx.ui.notify(
+                `Poshify init for "${initName}" installed to ${result.cwd}`,
+                'info',
+              );
+            }
+          }
         } catch (error) {
           summary = `⚠️ init failed: ${error.message}`;
         }

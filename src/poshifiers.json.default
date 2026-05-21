@@ -50,6 +50,27 @@
         "build/**"
       ],
       "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": [
+              "install",
+              "--save-dev",
+              "prettier",
+              "eslint",
+              "@eslint/js",
+              "globals",
+              "eslint-config-prettier",
+              "eslint-plugin-simple-import-sort",
+              "eslint-plugin-unused-imports"
+            ],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
       "tools": [
         {
           "cmd": "prettier",
@@ -98,10 +119,27 @@
       "include": ["**/*.md"],
       "exclude": ["node_modules/**"],
       "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", "{name}/.markdownlint.json"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": ["install", "--save-dev", "prettier", "markdownlint-cli"],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
       "tools": [
         {
           "cmd": "prettier",
           "args": ["--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        },
+        {
+          "cmd": "markdownlint",
+          "args": ["{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }

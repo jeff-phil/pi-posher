@@ -1,6 +1,6 @@
 {
   "name": "pi-posher",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi extension that automatically runs commands after agent writes and edits",
   "type": "module",
   "license": "MIT",
@@ -17,13 +17,13 @@
     "node": ">=20"
   },
   "files": [
-    "extensions",
+    "src",
     "README.md",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
-      "extensions/pi-posher/index.ts"
+      "src/index.ts"
     ]
   },
   "scripts": {},

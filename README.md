@@ -24,6 +24,8 @@ Global config, trusted automatically:
 ~/.pi/agent/extensions/pi-posher/poshifiers.json
 ```
 
+**On first use**, the extension seeds this file with default poshifiers for go, python, typescript, json, yaml, and markdown. You can edit or remove any entry.
+
 Project-local config, requires trust:
 
 ```text
@@ -103,6 +105,17 @@ Global config is considered trusted because it is user-owned agent configuration
         "build/**"
       ],
       "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": ["install", "--save-dev", "prettier", "eslint"],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
       "tools": [
         {
           "cmd": "prettier",
@@ -121,6 +134,10 @@ Global config is considered trusted because it is user-owned agent configuration
   ]
 }
 ```
+
+Each poshifier has an optional `init-setup` block with:
+- `init-configs`: Array of bundled config files to copy into the project (supports `{name}` placeholder for per-language variants).
+- `init-tools`: Commands to run during init (e.g., `npm install --save-dev ...`).
 
 ## Behavior
 
@@ -142,16 +159,19 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 
 ```
  /poshify (file|dir)          # Run configured tools for file or directory
- /poshify --init              # Install default configs and dependencies
+ /poshify --init <name>       # Install init configs for a poshifier type
  /poshify --fix [file|dir]    # Run ESLint --fix
  /poshify --help              # Show this usage
 ```
 
-`/poshify` with no arguments shows help message.
+`/poshify` with no arguments shows help message, including the list of available `--init` names.
 
-**`/poshify --init`** copies default config files in `$PI_CODING_AGENT_DIR/extensions/pi-posher/default-configs/` directory (`eslint.config.mjs`, `.prettierrc`, `.prettierignore`) into the current project and runs `npm install --save-dev eslint @eslint/js globals eslint-config-prettier` to install/update the required ESLint and Prettier packages. It skips any files that already exist.  **Note:** This is just a helper, you can add your necessary formatter, linter, etc. configuration files and install necessary tools without ever doing a `poshify --init`.
+**`/poshify --init <name>`** copies the `init-configs` defined for that poshifier into the current project, seeds user-level overrides from bundled templates if absent, and runs the `init-tools` commands (typically `npm install --save-dev ...`). Existing files in the project are skipped. For example:
 
-**`/poshify --fix`** runs `npx eslint --fix` on the target path. It requires an `eslint.config.*` file to exist in the current working directory. Again, not necessary to run, just a quick helper. In the future, fix will become file specific defined in the configuration file.
+- `/poshify --init typescript` copies `.prettierrc`, `.prettierignore`, `eslint.config.mjs` and installs ESLint + Prettier.
+- `/poshify --init markdown` copies `.prettierrc` and `.markdownlint.json`, installs Prettier + markdownlint.
+
+**`/poshify --fix`** runs `npx eslint --fix` on the target path. It requires an `eslint.config.*` file to exist in the current working directory. Not necessary to run, just a quick helper.
 
 #### `run_poshify` tool
 
@@ -179,6 +199,7 @@ Placeholders (template tags):
 | `{relDir}` | That directory relative to `{root}` | `src` |
 | `{config}` | Resolved command config path (if set) | |
 | `{configDir}` | Directory containing `{config}` | |
+| `{name}` | Poshifier name (useful in `init-setup` paths and args) | `typescript` |
 
 `{root}` is found by walking up from `{file}` looking for `anchors`. `{workspace}` is where Pi is running. They are usually the same, but in a monorepo where a file is in `packages/bar/` and the anchor (`package.json`) is there, `{root}` = `packages/bar/` while `{workspace}` = the repo root.
 
@@ -188,17 +209,17 @@ Placeholders (template tags):
  Poshify:
 
  ✅ markdown: /pi-agent/npm-global/bin/prettier checked README.md
- ✅ typescript: /pi-agent/npm-global/bin/prettier checked extensions/pi-posher/pi-posher.mjs
- ✅ typescript: /pi-agent/npm-global/bin/eslint checked extensions/pi-posher/pi-posher.mjs
+ ✅ typescript: /pi-agent/npm-global/bin/prettier checked src/pi-posher.mjs
+ ✅ typescript: /pi-agent/npm-global/bin/eslint checked src/pi-posher.mjs
  ✅ json: /pi-agent/npm-global/bin/prettier modified package.json
 ```
 
 ```text
  Poshify:
 
- ✅ typescript: /pi-agent/npm-global/bin/prettier checked extensions/pi-posher/pi-posher.mjs
+ ✅ typescript: /pi-agent/npm-global/bin/prettier checked src/pi-posher.mjs
  ⚠️ typescript /pi-agent/npm-global/bin/eslint failed with exit code 1:
- /Users/jeffrey/devel/pi/pi-posher/extensions/pi-posher/pi-posher.mjs
+ /Users/jeffrey/devel/pi/pi-posher/src/pi-posher.mjs
    1:1  error  Run autofix to sort these imports!  simple-import-sort/imports
 
  ✖ 1 problem (1 error, 0 warnings)
