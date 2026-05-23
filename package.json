@@ -5,10 +5,11 @@
   "type": "module",
   "license": "MIT",
   "keywords": [
-    "pi-package",
     "pi",
+    "pi-package",
     "format",
     "lint",
+    "code-quality",
     "sast",
     "conversions",
     "poshify"
@@ -29,6 +30,22 @@
   "scripts": {},
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-no-unsanitized": "^4.1.5",
+    "eslint-plugin-security": "^4.0.0",
+    "eslint-plugin-simple-import-sort": "^13.0.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^17.6.0",
+    "markdownlint-cli": "^0.48.0",
+    "node-jq": "^6.3.1",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.4"
   }
 }

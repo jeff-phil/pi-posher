@@ -106,16 +106,17 @@ Global config is considered trusted because it is user-owned agent configuration
       ],
       "anchors": ["package.json"],
       "init-setup": {
-        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs"],
+        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs", "eslint-ts.mjs"],
         "init-tools": [
           {
             "cmd": "npm",
-            "args": ["install", "--save-dev", "prettier", "eslint"],
+            "args": ["install", "--save-dev", "prettier", "eslint", "@eslint/js", "globals", "eslint-config-prettier", "eslint-plugin-simple-import-sort", "eslint-plugin-unused-imports", "typescript-eslint"],
             "cwd": "{root}",
             "timeoutMs": 120000
           }
         ]
       },
+      "maxFileSizeBytes": 2097152,
       "tools": [
         {
           "cmd": "prettier",
@@ -129,6 +130,14 @@ Global config is considered trusted because it is user-owned agent configuration
           "cwd": "{root}",
           "timeoutMs": 30000
         }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "eslint",
+          "args": ["--fix", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 120000
+        }
       ]
     }
   ]
@@ -136,8 +145,28 @@ Global config is considered trusted because it is user-owned agent configuration
 ```
 
 Each poshifier has an optional `init-setup` block with:
-- `init-configs`: Array of bundled config files to copy into the project (supports `{name}` placeholder for per-language variants).
+
+- `init-configs`: Array of bundled config files, directories, or glob patterns to copy into the project root (`{root}`). Supports `{name}` placeholder for per-language variants.
+  - Paths without `{name}/` are copied to `{root}` directly (e.g., `.prettierrc`).
+  - Paths with `{name}/` strip the `{name}` prefix and preserve any remaining subdirectories (e.g., `{name}/foo/bar.json` → `{root}/foo/bar.json`).
+  - Directory entries (e.g., `{name}/foo/`, `{name}/foo/**`) are copied recursively. Existing files in the destination are skipped; new files from the source are merged in.
+  - Glob patterns are supported in the final path segment (e.g., `{name}/configs/*.json`, `{name}/rules/*.{json,yaml}`). The glob matches files in the directory part. Any matched file is copied with its parent subdirectory preserved.
+  - Files already in the destination are skipped without error.
+  - Empty glob matches silently skip.
 - `init-tools`: Commands to run during init (e.g., `npm install --save-dev ...`).
+- `fix-tools`: Commands to run for `/poshify --fix` (same schema as `tools`).
+- `maxFileSizeBytes`: Optional limit in bytes; files larger than this are silently skipped (default 2 MB).
+
+Every tool object (in `tools`, `fix-tools`, or `init-tools`) supports these fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `cmd` | string | Command to run |
+| `args` | string[] | Arguments passed to the command |
+| `cwd` | string | Working directory (supports placeholders) |
+| `timeoutMs` | number | Timeout in milliseconds (default 15000) |
+| `config` | string | Path to a config file; sets `{config}` and `{configDir}` placeholders |
+| `env` | object | Key/value map merged into the command's environment |
 
 ## Behavior
 
@@ -157,10 +186,10 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 
 #### `/poshify` slash command
 
-```
+```text
  /poshify (file|dir)          # Run configured tools for file or directory
  /poshify --init <name>       # Install init configs for a poshifier type
- /poshify --fix [file|dir]    # Run ESLint --fix
+ /poshify --fix [file|dir]    # Run configured fix-tools
  /poshify --help              # Show this usage
 ```
 
@@ -168,10 +197,11 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 
 **`/poshify --init <name>`** copies the `init-configs` defined for that poshifier into the current project, seeds user-level overrides from bundled templates if absent, and runs the `init-tools` commands (typically `npm install --save-dev ...`). Existing files in the project are skipped. For example:
 
-- `/poshify --init typescript` copies `.prettierrc`, `.prettierignore`, `eslint.config.mjs` and installs ESLint + Prettier.
-- `/poshify --init markdown` copies `.prettierrc` and `.markdownlint.json`, installs Prettier + markdownlint.
+- `/poshify --init typescript` copies `.prettierrc`, `.prettierignore`, `eslint.config.mjs`, `eslint-ts.mjs` to the project root and installs ESLint + Prettier.
+- `/poshify --init markdown` copies `.prettierrc` to the project root and `.markdownlint.json` (bundled at `{name}/.markdownlint.json`) to the project root, then installs Prettier + markdownlint-cli.
+- A config like `{name}/foo/bar.json` would be placed at `foo/bar.json` in the project.
 
-**`/poshify --fix`** runs `npx eslint --fix` on the target path. It requires an `eslint.config.*` file to exist in the current working directory. Not necessary to run, just a quick helper.
+**`/poshify --fix [file|dir]`** runs the `fix-tools` configured for each matching poshifier. Each poshifier can define its own fix commands (e.g., `eslint --fix`, `ruff check --fix`, `markdownlint --fix`). Files without configured `fix-tools` are silently skipped.
 
 #### `run_poshify` tool
 
@@ -190,7 +220,7 @@ Path rules:
 Placeholders (template tags):
 
 | Placeholder | Meaning | Example |
-|---|---|---|
+| --- | --- | --- |
 | `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json` | `/Users/jeffrey/my-project` |
 | `{root}` | Nearest directory containing an `anchor` marker | `/Users/jeffrey/my-project` |
 | `{file}` | Absolute path to the file being processed | `/Users/jeffrey/my-project/src/foo.go` |
@@ -229,7 +259,7 @@ Placeholders (template tags):
 ```text
  Poshify:
 
- ✅ ESLint --fix completed with no issues.
+ ✅ typescript: eslint fixed src/index.ts
 ```
 
 ## Disable a poshifier
@@ -241,7 +271,6 @@ Remove it from the config, or override with an empty object:
   "poshifiers": [{ "name": "go" }]
 }
 ```
-
 
 ## Acknowledgement
 

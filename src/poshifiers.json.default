@@ -37,11 +37,19 @@
           "cwd": "{root}",
           "timeoutMs": 30000
         }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "uv",
+          "args": ["run", "ruff", "check", "--fix", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
       ]
     },
     {
-      "name": "typescript",
-      "include": ["**/*.{ts,tsx,js,jsx,mjs,cjs,svelte}"],
+      "name": "javascript",
+      "include": ["**/*.{js,jsx,mjs,cjs}"],
       "exclude": [
         "node_modules/**",
         "dist/**",
@@ -51,7 +59,12 @@
       ],
       "anchors": ["package.json"],
       "init-setup": {
-        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs"],
+        "init-configs": [
+          ".prettierrc",
+          ".prettierignore",
+          "eslint.config.mjs",
+          "eslint-js.mjs"
+        ],
         "init-tools": [
           {
             "cmd": "npm",
@@ -60,11 +73,13 @@
               "--save-dev",
               "prettier",
               "eslint",
-              "@eslint/js",
-              "globals",
               "eslint-config-prettier",
               "eslint-plugin-simple-import-sort",
-              "eslint-plugin-unused-imports"
+              "eslint-plugin-unused-imports",
+              "eslint-plugin-security",
+              "eslint-plugin-no-unsanitized",
+              "globals",
+              "@eslint/js"
             ],
             "cwd": "{root}",
             "timeoutMs": 120000
@@ -73,16 +88,153 @@
       },
       "tools": [
         {
-          "cmd": "prettier",
-          "args": ["--write", "{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
-          "cmd": "eslint",
-          "args": ["{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--cache", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 30000
+        }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 120000
+        }
+      ]
+    },
+    {
+      "name": "typescript",
+      "include": ["**/*.{ts,tsx,mts,cts}"],
+      "exclude": [
+        "node_modules/**",
+        "dist/**",
+        ".next/**",
+        ".svelte-kit/**",
+        "build/**"
+      ],
+      "anchors": ["package.json", "tsconfig.json"],
+      "init-setup": {
+        "init-configs": [
+          ".prettierrc",
+          ".prettierignore",
+          "eslint.config.mjs",
+          "eslint-ts.mjs"
+        ],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": [
+              "install",
+              "--save-dev",
+              "prettier",
+              "eslint",
+              "eslint-config-prettier",
+              "eslint-plugin-simple-import-sort",
+              "eslint-plugin-unused-imports",
+              "eslint-plugin-security",
+              "eslint-plugin-no-unsanitized",
+              "globals",
+              "typescript-eslint",
+              "typescript"
+            ],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
+      "tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 25000
+        },
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--cache", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 120000
+        }
+      ]
+    },
+    {
+      "name": "svelte",
+      "include": ["**/*.svelte"],
+      "exclude": [
+        "node_modules/**",
+        "dist/**",
+        ".next/**",
+        ".svelte-kit/**",
+        "build/**"
+      ],
+      "anchors": ["package.json", "svelte.config.js", "svelte.config.ts"],
+      "init-setup": {
+        "init-configs": [
+          ".prettierrc",
+          ".prettierignore",
+          "eslint.config.mjs",
+          "eslint-svelte.mjs"
+        ],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": [
+              "install",
+              "--save-dev",
+              "prettier",
+              "eslint",
+              "eslint-config-prettier",
+              "eslint-plugin-simple-import-sort",
+              "eslint-plugin-unused-imports",
+              "eslint-plugin-security",
+              "eslint-plugin-no-unsanitized",
+              "globals",
+              "@eslint/js",
+              "eslint-plugin-svelte",
+              "svelte",
+              "typescript-eslint",
+              "typescript"
+            ],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
+      "tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 25000
+        },
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--cache", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 120000
         }
       ]
     },
@@ -91,10 +243,27 @@
       "include": ["**/*.json"],
       "exclude": ["node_modules/**", "package-lock.json"],
       "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", ".prettierignore"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": ["install", "--save-dev", "prettier", "node-jq"],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
       "tools": [
         {
-          "cmd": "prettier",
-          "args": ["--write", "{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        },
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "node-jq", "-e", "\"empty\"", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -105,10 +274,27 @@
       "include": ["**/*.{yaml,yml}"],
       "exclude": ["node_modules/**"],
       "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", ".prettierignore"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": ["install", "--save-dev", "prettier", "yaml-lint"],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
       "tools": [
         {
-          "cmd": "prettier",
-          "args": ["--write", "{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        },
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "yaml-lint", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -120,7 +306,7 @@
       "exclude": ["node_modules/**"],
       "anchors": ["package.json"],
       "init-setup": {
-        "init-configs": [".prettierrc", "{name}/.markdownlint.json"],
+        "init-configs": [".prettierrc", ".markdownlint.json"],
         "init-tools": [
           {
             "cmd": "npm",
@@ -132,14 +318,22 @@
       },
       "tools": [
         {
-          "cmd": "prettier",
-          "args": ["--write", "{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
         {
-          "cmd": "markdownlint",
-          "args": ["{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "markdownlint", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "markdownlint", "--fix", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }

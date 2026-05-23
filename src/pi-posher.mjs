@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { Box, Spacer, Text } from '@earendil-works/pi-tui';
 
 // ── glob ──────────────────────────────────────────────────────────────
@@ -159,11 +160,6 @@ function commandOutput(result) {
   );
 }
 
-function formatWarnings(title, warnings) {
-  if (warnings.length === 0) return '';
-  return `${title}:\n\n${warnings.map((warning) => `⚠️ ${warning}`).join('\n')}`;
-}
-
 function formatCommandIssue(toolId, action, result) {
   const output = commandOutput(result);
   const suffix = result.killed ? ' (killed/timeout)' : '';
@@ -176,10 +172,20 @@ function hasIssueOutput(output) {
   return output.includes('⚠️');
 }
 
-function joinSections(title, lines) {
-  const nonEmpty = lines.filter((line) => line.trim().length > 0);
-  if (nonEmpty.length === 0) return '';
-  return `${title}:\n\n${nonEmpty.join('\n')}`;
+function formatConfigHeader(loaded) {
+  const agentDir = getAgentDir();
+  const defaultAgentDir = path.join(os.homedir(), '.pi', 'agent');
+  const projectLayer = loaded.layers.find((l) => l.scope === 'project');
+  if (projectLayer) return `Poshify (${projectLayer.path})`;
+  const globalLayer = loaded.layers.find((l) => l.scope === 'global');
+  if (globalLayer) {
+    const displayPath =
+      agentDir === defaultAgentDir && globalLayer.path.startsWith(agentDir)
+        ? globalLayer.path.replace(agentDir, '~/.pi/agent')
+        : globalLayer.path;
+    return `Poshify (${displayPath})`;
+  }
+  return 'Poshify (built-in defaults)';
 }
 
 // ── trust ─────────────────────────────────────────────────────────────
@@ -189,14 +195,79 @@ function sha256(content) {
 }
 
 function getExtensionDataDir() {
-  const agentDir =
-    process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
-  return path.join(agentDir, 'extensions', 'pi-posher');
+  return path.join(getAgentDir(), 'extensions', 'pi-posher');
 }
 
 function getInitConfigsDir() {
-  const __dirname = path.dirname(new URL(import.meta.url).pathname);
-  return path.join(__dirname, 'init-configs');
+  // Strategy 1: Use import.meta.url (works when loaded natively as ESM)
+  try {
+    if (typeof import.meta?.url === 'string') {
+      const dir = path.dirname(new URL(import.meta.url).pathname);
+      const candidate = path.join(dir, 'init-configs');
+      if (fsSync.existsSync(candidate)) return candidate;
+    }
+  } catch {
+    // import.meta may not be available in CJS/jiti context
+  }
+
+  const agentDir = getAgentDir();
+
+  // Strategy 2: npm-installed package
+  const npmCandidate = path.join(
+    agentDir,
+    'npm',
+    'node_modules',
+    'pi-posher',
+    'src',
+    'init-configs',
+  );
+  if (fsSync.existsSync(npmCandidate)) return npmCandidate;
+
+  // Strategy 3: Search for init-configs directory by walking up from CWD
+  // (handles local path packages where the project is a parent of CWD)
+  let searchDir = process.cwd();
+  for (let i = 0; i < 20; i += 1) {
+    const candidate = path.join(searchDir, 'src', 'init-configs');
+    if (
+      fsSync.existsSync(candidate) &&
+      fsSync.existsSync(path.join(searchDir, 'package.json'))
+    ) {
+      try {
+        const pkg = JSON.parse(
+          fsSync.readFileSync(path.join(searchDir, 'package.json'), 'utf8'),
+        );
+        if (pkg.name === 'pi-posher') return candidate;
+      } catch {
+        // ignore parse errors
+      }
+    }
+    const parent = path.dirname(searchDir);
+    if (parent === searchDir) break;
+    searchDir = parent;
+  }
+
+  // Strategy 4: Check settings.json for local path references to pi-posher
+  try {
+    const settingsPath = path.join(agentDir, 'settings.json');
+    if (fsSync.existsSync(settingsPath)) {
+      const settings = JSON.parse(fsSync.readFileSync(settingsPath, 'utf8'));
+      const packages = settings.packages ?? [];
+      for (const pkg of packages) {
+        const source = typeof pkg === 'string' ? pkg : pkg.source;
+        if (!source || !source.includes('pi-posher')) continue;
+        if (source.startsWith('npm:')) continue;
+        // Resolve local path relative to agentDir
+        const resolved = path.resolve(agentDir, source);
+        const candidate = path.join(resolved, 'src', 'init-configs');
+        if (fsSync.existsSync(candidate)) return candidate;
+      }
+    }
+  } catch {
+    // ignore settings parse errors
+  }
+
+  // Final fallback: return the npm path (even if it doesn't exist yet)
+  return npmCandidate;
 }
 
 async function ensureUserConfigDir() {
@@ -207,16 +278,89 @@ async function ensureUserConfigDir() {
   return userDir;
 }
 
-async function ensureGlobalConfig(ctx) {
+// Get the directory containing the extension source files (where poshifiers.json.default lives)
+function getExtensionSourceDir() {
+  // The init-configs directory is at src/init-configs, so the source dir is its parent
+  const initConfigsDir = getInitConfigsDir();
+  if (initConfigsDir && fsSync.existsSync(initConfigsDir)) {
+    return path.dirname(initConfigsDir);
+  }
+  // Fallback: try import.meta.url's parent
+  try {
+    if (typeof import.meta?.url === 'string') {
+      const dir = path.dirname(new URL(import.meta.url).pathname);
+      // Check if this is the src dir (has poshifiers.json.default)
+      if (fsSync.existsSync(path.join(dir, 'poshifiers.json.default'))) return dir;
+    }
+  } catch {
+    // ignore
+  }
+  return initConfigsDir ? path.dirname(initConfigsDir) : '';
+}
+
+function getInitConfigsDataDir() {
+  return path.join(getExtensionDataDir(), 'init-configs');
+}
+
+async function seedPoshifyDefaults() {
   const configFile = path.join(getExtensionDataDir(), 'poshifiers.json');
-  const defaultSource = path.join(getInitConfigsDir(), 'poshifiers.json.default');
+  // poshifiers.json.default is in the source dir (e.g. src/), NOT in init-configs/
+  const defaultSource = path.join(getExtensionSourceDir(), 'poshifiers.json.default');
   if (!fsSync.existsSync(configFile) && fsSync.existsSync(defaultSource)) {
     await fs.mkdir(path.dirname(configFile), { recursive: true });
     await fs.copyFile(defaultSource, configFile);
-    if (ctx?.hasUI) {
-      ctx.ui.notify(`Poshify defaults installed to ${getExtensionDataDir()}`, 'info');
+    return true;
+  }
+  return false;
+}
+
+async function seedAllInitConfigs() {
+  const initDataDir = getInitConfigsDataDir();
+  const bundledDir = getInitConfigsDir();
+  const bundledDirExists = fsSync.existsSync(bundledDir);
+
+  // Ensure init-configs data dir exists before seeding
+  if (!fsSync.existsSync(initDataDir)) {
+    await fs.mkdir(initDataDir, { recursive: true });
+  }
+
+  // Get items from the bundled defaults layer (includes code-embedded fallback)
+  const defaultsLayer = readBundledDefaultsLayer();
+  const items = defaultsLayer?.items ?? [];
+  if (items.length === 0) return false;
+
+  // Can only seed init-configs files if the bundled dir exists on disk
+  if (!bundledDirExists) {
+    return false;
+  }
+
+  let seeded = false;
+
+  for (const item of items) {
+    const initConfigs = item?.['init-setup']?.['init-configs'];
+    if (!initConfigs || initConfigs.length === 0) continue;
+    for (const entry of initConfigs) {
+      // Check if this entry needs seeding before calling seedInitFromBundled
+      const templated = normalizeInitEntry(entry.replace(/\{name\}/g, item.name));
+      let needsSeed = false;
+      if (hasGlobMeta(templated)) {
+        const matches = await expandInitGlob(bundledDir, templated);
+        for (const matched of matches) {
+          if (!fsSync.existsSync(path.join(initDataDir, matched))) {
+            needsSeed = true;
+            break;
+          }
+        }
+      } else if (!fsSync.existsSync(path.join(initDataDir, templated))) {
+        needsSeed = true;
+      }
+
+      await seedInitFromBundled(bundledDir, initDataDir, entry, item.name);
+      if (needsSeed) seeded = true;
     }
   }
+
+  return seeded;
 }
 
 async function readTrustStore(storePath) {
@@ -257,6 +401,9 @@ async function rememberTrustedHash(kind, hash) {
 }
 
 function formatCommandList(cmds) {
+  if (typeof cmds === 'string') {
+    return cmds || '  (no commands declared)';
+  }
   const unique = [...new Set(cmds.filter(Boolean))];
   if (unique.length === 0) return '  (no commands declared)';
   return unique.map((cmd) => `  - ${cmd}`).join('\n');
@@ -286,13 +433,28 @@ async function askProjectConfigTrust(options) {
     'Trust this config?',
   ].join('\n');
 
+  const agentDir = getAgentDir();
+  const defaultAgentDir = path.join(os.homedir(), '.pi', 'agent');
+  const displayGlobal = options.globalPath
+    ? options.globalPath.startsWith(agentDir)
+      ? agentDir === defaultAgentDir
+        ? options.globalPath.replace(agentDir, '~/.pi/agent')
+        : options.globalPath
+      : options.globalPath
+    : '';
+
+  const globalConfigLine = displayGlobal
+    ? `\n                     ${displayGlobal}`
+    : '';
+
   const choice = await options.ctx.ui.select(title, [
-    'Trust once',
-    'Trust always',
-    'Reject',
+    'Trust once    - use the project-local config for this session only',
+    'Trust always  - always use the project-local config, and remember the file hash.',
+    `Reject        - use the global config for this session:${globalConfigLine}`,
   ]);
-  if (choice === 'Trust once') return { trusted: true, persist: false };
-  if (choice === 'Trust always') {
+  if (choice === undefined) throw new Error('Cancelled');
+  if (choice.startsWith('Trust once')) return { trusted: true, persist: false };
+  if (choice.startsWith('Trust always')) {
     await rememberTrustedHash(options.kind, options.hash);
     return { trusted: true, persist: true };
   }
@@ -377,7 +539,17 @@ function createPathPlaceholders(options) {
   const config = options.config ? toAbsolutePath(options.config, root) : '';
   const configDir = config ? path.dirname(config) : '';
 
-  return { workspace, root, file, relFile, dir, relDir, config, configDir };
+  return {
+    workspace,
+    root,
+    file,
+    relFile,
+    dir,
+    relDir,
+    config,
+    configDir,
+    name: options.name ?? '',
+  };
 }
 
 function resolveExecutable(bin, root) {
@@ -589,6 +761,7 @@ function cleanCommands(tools) {
 function cleanPoshifier(object) {
   if (typeof object.name !== 'string' || object.name.trim() === '') return undefined;
   const tools = cleanCommands(object.tools);
+  const fixTools = cleanCommands(object['fix-tools']);
   const initSetup = cleanInitSetup(object);
   return {
     name: object.name,
@@ -597,6 +770,7 @@ function cleanPoshifier(object) {
     anchors: cleanStringArray(object.anchors),
     maxFileSizeBytes: cleanNumber(object.maxFileSizeBytes),
     tools,
+    'fix-tools': fixTools,
     'init-setup': initSetup,
   };
 }
@@ -636,6 +810,357 @@ async function readJsonLayer(options) {
   };
 }
 
+const DEFAULT_POSHIFIERS = [
+  {
+    name: 'go',
+    include: ['**/*.go'],
+    exclude: ['vendor/**'],
+    anchors: ['go.mod'],
+    tools: [
+      { cmd: 'gofmt', args: ['-w', '{file}'], cwd: '{root}', timeoutMs: 25000 },
+      {
+        cmd: 'golangci-lint',
+        args: ['run', '--new-from-rev=HEAD', '--timeout=25s', './{relDir}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+  },
+  {
+    name: 'python',
+    include: ['**/*.py'],
+    anchors: ['pyproject.toml', 'ruff.toml'],
+    tools: [
+      {
+        cmd: 'uv',
+        args: ['run', 'ruff', 'format', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 25000,
+      },
+      {
+        cmd: 'uv',
+        args: ['run', 'ruff', 'check', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+    'fix-tools': [
+      {
+        cmd: 'uv',
+        args: ['run', 'ruff', 'check', '--fix', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+  },
+  {
+    name: 'javascript',
+    include: ['**/*.{js,jsx,mjs,cjs}'],
+    exclude: ['node_modules/**', 'dist/**', '.next/**', '.svelte-kit/**', 'build/**'],
+    anchors: ['package.json'],
+    'init-setup': {
+      'init-configs': [
+        '.prettierrc',
+        '.prettierignore',
+        'eslint.config.mjs',
+        'eslint-js.mjs',
+      ],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: [
+            'install',
+            '--save-dev',
+            'prettier',
+            'eslint',
+            'eslint-config-prettier',
+            'eslint-plugin-simple-import-sort',
+            'eslint-plugin-unused-imports',
+            'eslint-plugin-security',
+            'eslint-plugin-no-unsanitized',
+            'globals',
+            '@eslint/js',
+          ],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 25000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+    'fix-tools': [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--fix', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 120000,
+      },
+    ],
+  },
+  {
+    name: 'typescript',
+    include: ['**/*.{ts,tsx,mts,cts}'],
+    exclude: ['node_modules/**', 'dist/**', '.next/**', '.svelte-kit/**', 'build/**'],
+    anchors: ['package.json', 'tsconfig.json'],
+    'init-setup': {
+      'init-configs': [
+        '.prettierrc',
+        '.prettierignore',
+        'eslint.config.mjs',
+        'eslint-ts.mjs',
+      ],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: [
+            'install',
+            '--save-dev',
+            'prettier',
+            'eslint',
+            'eslint-config-prettier',
+            'eslint-plugin-simple-import-sort',
+            'eslint-plugin-unused-imports',
+            'eslint-plugin-security',
+            'eslint-plugin-no-unsanitized',
+            'globals',
+            'typescript-eslint',
+            'typescript',
+          ],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 25000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+    'fix-tools': [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--fix', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 120000,
+      },
+    ],
+  },
+  {
+    name: 'svelte',
+    include: ['**/*.svelte'],
+    exclude: ['node_modules/**', 'dist/**', '.next/**', '.svelte-kit/**', 'build/**'],
+    anchors: ['package.json', 'svelte.config.js', 'svelte.config.ts'],
+    'init-setup': {
+      'init-configs': [
+        '.prettierrc',
+        '.prettierignore',
+        'eslint.config.mjs',
+        'eslint-svelte.mjs',
+      ],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: [
+            'install',
+            '--save-dev',
+            'prettier',
+            'eslint',
+            'eslint-config-prettier',
+            'eslint-plugin-simple-import-sort',
+            'eslint-plugin-unused-imports',
+            'eslint-plugin-security',
+            'eslint-plugin-no-unsanitized',
+            'globals',
+            '@eslint/js',
+            'eslint-plugin-svelte',
+            'svelte',
+            'typescript-eslint',
+            'typescript',
+          ],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 25000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 30000,
+      },
+    ],
+    'fix-tools': [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'eslint', '--fix', '--cache', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 120000,
+      },
+    ],
+  },
+  {
+    name: 'json',
+    include: ['**/*.json'],
+    exclude: ['node_modules/**', 'package-lock.json'],
+    anchors: ['package.json'],
+    'init-setup': {
+      'init-configs': ['.prettierrc', '.prettierignore'],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: ['install', '--save-dev', 'prettier', 'node-jq'],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'node-jq', '-e', '"empty"', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+  },
+  {
+    name: 'yaml',
+    include: ['**/*.{yaml,yml}'],
+    exclude: ['node_modules/**'],
+    anchors: ['package.json'],
+    'init-setup': {
+      'init-configs': ['.prettierrc', '.prettierignore'],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: ['install', '--save-dev', 'prettier', 'yaml-lint'],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'yaml-lint', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+  },
+  {
+    name: 'markdown',
+    include: ['**/*.md'],
+    exclude: ['node_modules/**'],
+    anchors: ['package.json'],
+    'init-setup': {
+      'init-configs': ['.prettierrc', '.markdownlint.json'],
+      'init-tools': [
+        {
+          cmd: 'npm',
+          args: ['install', '--save-dev', 'prettier', 'markdownlint-cli'],
+          cwd: '{root}',
+          timeoutMs: 120000,
+        },
+      ],
+    },
+    tools: [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'prettier', '--write', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'markdownlint', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+    'fix-tools': [
+      {
+        cmd: 'npm',
+        args: ['exec', '--', 'markdownlint', '--fix', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+  },
+];
+
+function readBundledDefaultsLayer() {
+  // First try reading from the bundled poshifiers.json.default file
+  // Note: poshifiers.json.default is in the source dir (src/), NOT in init-configs/
+  const defaultSource = path.join(getExtensionSourceDir(), 'poshifiers.json.default');
+  try {
+    if (fsSync.existsSync(defaultSource)) {
+      const raw = fsSync.readFileSync(defaultSource, 'utf8');
+      const parsed = JSON.parse(raw);
+      return {
+        scope: 'defaults',
+        path: defaultSource,
+        dir: path.dirname(defaultSource),
+        raw,
+        hash: sha256(raw),
+        items: parsePoshifyItems(parsed),
+      };
+    }
+  } catch {
+    // fall through to code defaults
+  }
+
+  // Ultimate fallback: code-embedded defaults (pi-tool-display pattern)
+  return {
+    scope: 'defaults',
+    path: '<code-embedded>',
+    dir: '',
+    raw: '',
+    hash: '',
+    items: DEFAULT_POSHIFIERS.map((item) => cleanPoshifier(item)).filter(Boolean),
+  };
+}
+
 function mergeLayers(layers) {
   const byName = new Map();
   for (const layer of layers) {
@@ -646,13 +1171,43 @@ function mergeLayers(layers) {
   return [...byName.values()];
 }
 
-function commandsForPoshify(items) {
-  return items.flatMap((item) =>
-    item.tools.map((tool) => tool.cmd).filter((cmd) => !!cmd),
-  );
+function commandsForPoshifySection(items, section) {
+  return items.flatMap((item) => {
+    let cmds;
+    if (section === 'init-tools') {
+      cmds = item['init-setup']?.['init-tools'];
+    } else {
+      cmds = item[section];
+    }
+    if (!Array.isArray(cmds)) return [];
+    return cmds
+      .filter((tool) => typeof tool.cmd === 'string' && tool.cmd.trim() !== '')
+      .map((tool) => {
+        const args = (tool.args ?? []).join(' ');
+        return args ? `${tool.cmd} ${args}` : tool.cmd;
+      });
+  });
 }
 
-async function loadPoshifyConfig(ctx) {
+function commandsForPoshify(items) {
+  const sections = [];
+  const initTools = commandsForPoshifySection(items, 'init-tools');
+  if (initTools.length > 0)
+    sections.push(`init-tools:\n${initTools.map((c) => `  - ${c}`).join('\n')}`);
+  const tools = commandsForPoshifySection(items, 'tools');
+  if (tools.length > 0)
+    sections.push(`tools:\n${tools.map((c) => `  - ${c}`).join('\n')}`);
+  const fixTools = commandsForPoshifySection(items, 'fix-tools');
+  if (fixTools.length > 0)
+    sections.push(`fix-tools:\n${fixTools.map((c) => `  - ${c}`).join('\n')}`);
+  return sections.join('\n\n');
+}
+
+async function loadPoshifyConfig(ctx, cache) {
+  if (cache && cache.ready) {
+    return cache.value;
+  }
+
   const warnings = [];
   const layers = [];
   const globalPath = path.join(getExtensionDataDir(), 'poshifiers.json');
@@ -666,6 +1221,11 @@ async function loadPoshifyConfig(ctx) {
     if (globalLayer) layers.push(globalLayer);
   } catch (error) {
     warnings.push(`Failed to load global poshify config: ${error.message}`);
+  }
+
+  if (layers.length === 0) {
+    const defaultsLayer = readBundledDefaultsLayer();
+    if (defaultsLayer) layers.push(defaultsLayer);
   }
 
   const projectPath = findUp(ctx.cwd, path.join('.pi', 'poshifiers.json'));
@@ -683,19 +1243,31 @@ async function loadPoshifyConfig(ctx) {
           configPath: projectLayer.path,
           hash: projectLayer.hash,
           commands: commandsForPoshify(projectLayer.items),
+          globalPath,
         });
         if (decision.trusted) layers.push(projectLayer);
         else
           warnings.push(
-            `${projectLayer.path}: ${decision.reason ?? 'project-local config rejected'}`,
+            `ℹ️ Project-level config rejected this session: ${projectLayer.path}`,
           );
       }
     } catch (error) {
-      warnings.push(`Failed to load project poshify config: ${error.message}`);
+      if (error.message === 'Cancelled') {
+        warnings.push(`${projectPath}: project-local config rejected by user`);
+      } else {
+        warnings.push(`Failed to load project poshify config: ${error.message}`);
+      }
     }
   }
 
-  return { items: mergeLayers(layers), layers, warnings };
+  const result = { items: mergeLayers(layers), layers, warnings };
+
+  if (cache) {
+    cache.value = result;
+    cache.ready = true;
+  }
+
+  return result;
 }
 
 // ── extension entrypoint ──────────────────────────────────────────────
@@ -716,7 +1288,8 @@ function customMessageText(content, details) {
 function registerDiagnosticsRenderer(pi) {
   pi.registerMessageRenderer('pi-posher', (message, _options, theme) => {
     const text = customMessageText(message.content, message.details);
-    const box = new Box(1, 1, (value) => theme.bg('toolSuccessBg', value));
+    const bgKey = hasIssueOutput(text) ? 'toolErrorBg' : 'toolSuccessBg';
+    const box = new Box(1, 1, (value) => theme.bg(bgKey, value));
     box.addChild(new Text(theme.fg('toolTitle', theme.bold('poshify')), 0, 0));
     if (text.trim()) {
       box.addChild(new Spacer(1));
@@ -735,7 +1308,26 @@ async function fileSizeAllowed(file, limit) {
   return stat.size <= limit;
 }
 
-async function hashFile(file) {
+function commandDisplayName(cmd, args) {
+  const basename = path.basename(cmd);
+  if (basename === 'npx' && args?.length > 0) {
+    return `npx ${args[0]}`;
+  }
+  if (basename === 'uv' && args?.[0] === 'run' && args?.length > 1) {
+    return `uv run ${args[1]}`;
+  }
+  if (
+    basename === 'npm' &&
+    args?.[0] === 'exec' &&
+    args?.[1] === '--' &&
+    args?.length > 2
+  ) {
+    return `npm exec ${args[2]}`;
+  }
+  return cmd;
+}
+
+async function readFileContent(file) {
   try {
     return await fs.readFile(file, 'utf8');
   } catch {
@@ -788,6 +1380,7 @@ async function runPoshifierCommand(options, tool, commandIndex, root) {
       workspace: options.workspace,
       root,
       file: options.file,
+      name: tool.name,
     },
   );
 
@@ -798,17 +1391,18 @@ async function runPoshifierCommand(options, tool, commandIndex, root) {
     };
   }
 
-  const before = await hashFile(options.file);
+  const before = await readFileContent(options.file);
   const result = await runCommand(command, options.ctx.signal);
 
   if (result.code === 0) {
-    const after = await hashFile(options.file);
+    const after = await readFileContent(options.file);
     const relFile = command.placeholders.relFile;
+    const displayName = commandDisplayName(command.cmd, command.args);
     return {
       line:
         before === after
-          ? `✅ ${tool.name}: ${command.cmd} checked ${relFile}`
-          : `✅ ${tool.name}: ${command.cmd} modified ${relFile}`,
+          ? `✅ ${tool.name}: ${displayName} checked ${relFile}`
+          : `✅ ${tool.name}: ${displayName} modified ${relFile}`,
       diagnostics: false,
     };
   }
@@ -837,53 +1431,49 @@ async function runTool(options) {
   return lines;
 }
 
-class PerFileQueue {
-  queues = new Map();
+async function runPoshifyForFileSet(ctx, files, cache) {
+  if (files.size === 0) return '';
 
-  run(file, task) {
-    const previous = this.queues.get(file) ?? Promise.resolve('');
-    const next = previous.catch(() => '').then(task);
-    const tracked = next.finally(() => {
-      if (this.queues.get(file) === tracked) this.queues.delete(file);
-    });
-    this.queues.set(file, tracked);
-    return next;
-  }
-}
-
-async function buildPoshifySummary(ctx, inputPath) {
-  const absoluteFile = toAbsolutePath(inputPath, ctx.cwd);
-  const loaded = await loadPoshifyConfig(ctx);
+  const loaded = await loadPoshifyConfig(ctx, cache);
   const warnings = [...loaded.warnings];
   const projectLayer = loaded.layers.find((layer) => layer.scope === 'project');
   const workspace = projectLayer ? path.dirname(projectLayer.dir) : ctx.cwd;
 
   if (loaded.items.length === 0) {
-    return formatWarnings('Poshify', warnings);
+    const header = formatConfigHeader(loaded);
+    const parts =
+      warnings.length > 0
+        ? [warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n')]
+        : [];
+    if (parts.length === 0) return `${header}:`;
+    return `${header}:\n${parts.join('\n\n')}`;
   }
 
-  const { matches, warnings: matchWarnings } = await matchTools(
-    ctx,
-    loaded.items,
-    absoluteFile,
-  );
-  warnings.push(...matchWarnings);
-  if (matches.length === 0) {
-    return formatWarnings('Poshify', warnings);
-  }
-
-  const lines = [];
-  for (const match of matches) {
-    try {
-      lines.push(...(await runTool({ ctx, match, file: absoluteFile, workspace })));
-    } catch (error) {
-      lines.push(`⚠️ ${match.tool.name}: ${error.message}`);
+  const allLines = [];
+  for (const file of files) {
+    checkAborted(ctx.signal);
+    const { matches, warnings: matchWarnings } = await matchTools(
+      ctx,
+      loaded.items,
+      file,
+    );
+    warnings.push(...matchWarnings);
+    for (const match of matches) {
+      try {
+        allLines.push(...(await runTool({ ctx, match, file, workspace })));
+      } catch (error) {
+        allLines.push(`⚠️ ${match.tool.name}: ${error.message}`);
+      }
     }
   }
 
-  return [formatWarnings('Poshify', warnings), joinSections('Poshify', lines)]
-    .filter(Boolean)
-    .join('\n\n');
+  const header = formatConfigHeader(loaded);
+  const parts = [];
+  if (warnings.length > 0)
+    parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
+  if (allLines.length > 0) parts.push(allLines.join('\n'));
+  if (parts.length === 0) return `${header}:`;
+  return `${header}:\n${parts.join('\n\n')}`;
 }
 
 async function* walkFiles(startDir, maxDepth = 10) {
@@ -918,7 +1508,7 @@ function checkAborted(signal) {
   if (signal?.aborted) throw new Error('Aborted');
 }
 
-async function runPoshifyBatch(ctx, inputPath) {
+async function runPoshifyBatch(ctx, inputPath, cache) {
   const absolutePath = toAbsolutePath(inputPath, ctx.cwd);
   let stats;
   try {
@@ -927,7 +1517,7 @@ async function runPoshifyBatch(ctx, inputPath) {
     return `⚠️ Path not found: ${inputPath}`;
   }
 
-  const loaded = await loadPoshifyConfig(ctx);
+  const loaded = await loadPoshifyConfig(ctx, cache);
   checkAborted(ctx.signal);
   const warnings = [...loaded.warnings];
   const projectLayer = loaded.layers.find((layer) => layer.scope === 'project');
@@ -966,9 +1556,129 @@ async function runPoshifyBatch(ctx, inputPath) {
     }
   }
 
-  return [formatWarnings('Poshify', warnings), joinSections('Poshify', allLines)]
-    .filter(Boolean)
-    .join('\n\n');
+  const header = formatConfigHeader(loaded);
+  const parts = [];
+  if (warnings.length > 0)
+    parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
+  if (allLines.length > 0) parts.push(allLines.join('\n'));
+  if (parts.length === 0) return `${header}:`;
+  return `${header}:\n${parts.join('\n\n')}`;
+}
+
+function normalizeInitEntry(entry) {
+  // Treat trailing /** and trailing / as directory references
+  return entry.replace(/\/\*\*$/, '').replace(/\/$/, '');
+}
+
+function stripNamePrefix(relPath, name) {
+  const prefix = name + '/';
+  if (relPath.startsWith(prefix)) return relPath.slice(prefix.length);
+  return relPath;
+}
+
+function hasGlobMeta(pattern) {
+  return pattern.includes('*') || pattern.includes('?') || pattern.includes('{');
+}
+
+async function expandInitGlob(baseDir, pattern) {
+  const results = [];
+  const dirPart = path.dirname(pattern);
+  const baseName = path.basename(pattern);
+  const baseDirAbs = path.join(baseDir, dirPart);
+  if (!fsSync.existsSync(baseDirAbs)) return [];
+  const entries = await fs.readdir(baseDirAbs, { withFileTypes: true });
+  for (const entry of entries) {
+    if (matchesGlob(baseName, entry.name)) {
+      results.push(path.join(dirPart, entry.name));
+    }
+  }
+  return results;
+}
+
+async function copyFileOrDir(src, dest, copied, skipped, cwd) {
+  const stat = fsSync.statSync(src);
+  if (stat.isDirectory()) {
+    if (fsSync.existsSync(dest) && !fsSync.statSync(dest).isDirectory()) {
+      throw new Error(
+        `Cannot copy directory ${src} to ${dest} — destination exists as a file`,
+      );
+    }
+    await fs.mkdir(dest, { recursive: true });
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      await copyFileOrDir(
+        path.join(src, entry.name),
+        path.join(dest, entry.name),
+        copied,
+        skipped,
+        cwd,
+      );
+    }
+  } else {
+    const rel = cwd ? normalizeRelativePath(path.relative(cwd, dest)) : dest;
+    if (fsSync.existsSync(dest)) {
+      if (skipped) skipped.push(rel);
+    } else {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(src, dest);
+      if (copied) copied.push(rel);
+    }
+  }
+}
+
+async function seedInitFromBundled(bundledDir, userDir, entry, name) {
+  const templated = normalizeInitEntry(entry.replace(/\{name\}/g, name));
+  if (hasGlobMeta(templated)) {
+    const matches = await expandInitGlob(bundledDir, templated);
+    for (const matched of matches) {
+      const destUser = path.join(userDir, matched);
+      if (fsSync.existsSync(destUser)) continue;
+      const srcBundled = path.join(bundledDir, matched);
+      if (fsSync.existsSync(srcBundled)) {
+        const destParent = path.dirname(destUser);
+        await fs.mkdir(destParent, { recursive: true });
+        await copyFileOrDir(srcBundled, destUser);
+      }
+    }
+    return;
+  }
+  const destUser = path.join(userDir, templated);
+  const srcBundled = path.join(bundledDir, templated);
+  if (!fsSync.existsSync(destUser) && fsSync.existsSync(srcBundled)) {
+    await copyFileOrDir(srcBundled, destUser);
+  }
+}
+
+async function copyInitToProject(userDir, cwd, entry, name, copied, skipped) {
+  const templated = normalizeInitEntry(entry.replace(/\{name\}/g, name));
+
+  if (hasGlobMeta(templated)) {
+    const matches = await expandInitGlob(userDir, templated);
+    if (matches.length === 0) {
+      throw new Error(`Init config glob matched nothing for "${name}": ${templated}`);
+    }
+    for (const matched of matches) {
+      const destRel = stripNamePrefix(matched, name);
+      await copyFileOrDir(
+        path.join(userDir, matched),
+        path.join(cwd, destRel),
+        copied,
+        skipped,
+        cwd,
+      );
+    }
+    return;
+  }
+
+  const srcPath = path.join(userDir, templated);
+  if (!fsSync.existsSync(srcPath)) {
+    throw new Error(
+      `Init config not found for "${name}": ${templated} (expected at ${srcPath})`,
+    );
+  }
+  const destRel = stripNamePrefix(templated, name);
+  const destPath = path.join(cwd, destRel);
+  await copyFileOrDir(srcPath, destPath, copied, skipped, cwd);
 }
 
 async function runInitByName(ctx, poshifier, name) {
@@ -980,46 +1690,23 @@ async function runInitByName(ctx, poshifier, name) {
   const configs = initSetup['init-configs'] ?? [];
   const tools = initSetup['init-tools'] ?? [];
   const bundledDir = getInitConfigsDir();
-  const userDir = getExtensionDataDir();
+  const initDataDir = getInitConfigsDataDir();
 
   // Seed user-level init-configs from bundled templates if not present
   await ensureUserConfigDir();
-  await fs.mkdir(path.join(userDir, name), { recursive: true });
-  for (const relPath of configs) {
-    const templated = relPath.replace(/\{name\}/g, name);
-    const destUser = path.join(userDir, templated);
-    const srcBundled = path.join(bundledDir, templated);
-    if (!fsSync.existsSync(destUser) && fsSync.existsSync(srcBundled)) {
-      const destParent = path.dirname(destUser);
-      await fs.mkdir(destParent, { recursive: true });
-      await fs.copyFile(srcBundled, destUser);
-    }
+  for (const entry of configs) {
+    await seedInitFromBundled(bundledDir, initDataDir, entry, name);
   }
 
   const copied = [];
   const skipped = [];
 
-  for (const relPath of configs) {
-    const templated = relPath.replace(/\{name\}/g, name);
-    const srcPath = path.join(userDir, templated);
-    if (!fsSync.existsSync(srcPath)) {
-      throw new Error(
-        `Init config not found for "${name}": ${templated} (expected at ${srcPath})`,
-      );
-    }
-    const fileName = path.basename(templated);
-    const destPath = path.join(cwd, fileName);
-    if (fsSync.existsSync(destPath)) {
-      skipped.push(fileName);
-      continue;
-    }
-    const destParent = path.dirname(destPath);
-    await fs.mkdir(destParent, { recursive: true });
-    await fs.copyFile(srcPath, destPath);
-    copied.push(fileName);
+  for (const entry of configs) {
+    await copyInitToProject(initDataDir, cwd, entry, name, copied, skipped);
   }
 
   // Run init-tools with name placeholder and root=cwd
+  const toolResults = [];
   const baseValues = { name, root: cwd };
   for (const tool of tools) {
     const command = {
@@ -1034,45 +1721,98 @@ async function runInitByName(ctx, poshifier, name) {
       signal: ctx.signal,
       env: command.env ? { ...process.env, ...command.env } : undefined,
     });
+    const output = commandOutput(result);
     if (result.code !== 0) {
-      const output = commandOutput(result);
       const err = new Error(
         `Init tool "${command.cmd}" failed with exit code ${result.code}${result.killed ? ' (killed/timeout)' : ''}${output ? ':\n' + output : ''}`,
       );
       err.cause = result;
       throw err;
     }
+    toolResults.push({ cmd: command.cmd, args: command.args, output });
   }
 
-  return { copied, skipped, cwd };
+  return { copied, skipped, toolResults, cwd };
 }
 
-async function hasEslintConfig(cwd) {
-  const entries = await fs.readdir(cwd).catch(() => []);
-  return entries.some((name) => /^eslint\.config\.([mc]?js|json)$/.test(name));
-}
+async function runFixers(ctx, inputPath, cache) {
+  const absolutePath = resolveAtPath(inputPath, ctx.cwd);
+  const loaded = await loadPoshifyConfig(ctx, cache);
+  const warnings = [...loaded.warnings];
+  const projectLayer = loaded.layers.find((layer) => layer.scope === 'project');
+  const workspace = projectLayer ? path.dirname(projectLayer.dir) : ctx.cwd;
 
-async function runEslintFix(ctx, targetPath) {
-  if (!(await hasEslintConfig(ctx.cwd))) {
-    return joinSections('Poshify', [`⚠️ No eslint.config.* file found in ${ctx.cwd}`]);
+  let stats;
+  try {
+    stats = await fs.stat(absolutePath);
+  } catch {
+    const header = `${formatConfigHeader(loaded)} --fix`;
+    return `${header}:\n⚠️ Path not found: ${inputPath}`;
   }
-  const absolutePath = resolveAtPath(targetPath, ctx.cwd);
-  const result = await execDirect('npx', ['eslint', '--fix', absolutePath], {
-    cwd: ctx.cwd,
-    timeout: 120000,
-    signal: ctx.signal,
-  });
-  const output = commandOutput(result);
-  if (result.code === 0) {
-    return joinSections('Poshify', [
-      output
-        ? `✅ ESLint --fix:\n${output}`
-        : '✅ ESLint --fix completed with no issues.',
-    ]);
+
+  const files = [];
+  if (stats.isDirectory()) {
+    for await (const file of walkFiles(absolutePath)) {
+      files.push(file);
+    }
+  } else {
+    files.push(absolutePath);
   }
-  return joinSections('Poshify', [
-    `⚠️ ESLint --fix failed (exit ${result.code}${result.killed ? ' killed/timeout' : ''}):\n${output}`,
-  ]);
+
+  const allLines = [];
+  for (const file of files) {
+    const { matches, warnings: matchWarnings } = await matchTools(
+      ctx,
+      loaded.items,
+      file,
+    );
+    warnings.push(...matchWarnings);
+    for (const match of matches) {
+      const fixTools = match.tool['fix-tools'];
+      if (!fixTools || fixTools.length === 0) continue;
+      const maxFileSizeBytes =
+        match.tool.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
+      if (!(await fileSizeAllowed(file, maxFileSizeBytes))) {
+        allLines.push(
+          `⚠️ ${match.tool.name}: skipped ${file}; file exceeds maxFileSizeBytes (${maxFileSizeBytes})`,
+        );
+        continue;
+      }
+      for (let i = 0; i < fixTools.length; i += 1) {
+        const fixTool = fixTools[i];
+        const command = resolveCommand(`${match.tool.name} fix-${i + 1}`, fixTool, {
+          workspace,
+          root: match.root,
+          file,
+          name: match.tool.name,
+        });
+        if (!isExecutableAvailable(command.cmd)) {
+          allLines.push(`⚠️ ${match.tool.name}: command not found: ${command.cmd}`);
+          continue;
+        }
+        const result = await runCommand(command, ctx.signal);
+        const displayName = commandDisplayName(command.cmd, command.args);
+        const relFile = command.placeholders.relFile;
+        if (result.code === 0) {
+          const output = commandOutput(result);
+          allLines.push(
+            output
+              ? `✅ ${match.tool.name}: ${displayName} fixed ${relFile}\n${output}`
+              : `✅ ${match.tool.name}: ${displayName} fixed ${relFile}`,
+          );
+        } else {
+          allLines.push(formatCommandIssue(match.tool.name, displayName, result));
+        }
+      }
+    }
+  }
+
+  const header = `${formatConfigHeader(loaded)} --fix`;
+  const parts = [];
+  if (warnings.length > 0) parts.push(warnings.map((w) => `⚠️ ${w}`).join('\n'));
+  if (allLines.length > 0) parts.push(allLines.join('\n'));
+  if (parts.length === 0) return `${header}:`;
+  return `${header}:\n\n${parts.join('\n\n')}`;
 }
 
 function normalizeUnicodeSpaces(str) {
@@ -1088,12 +1828,53 @@ function resolveAtPath(input, cwd) {
 }
 
 export default async function piPosherExtension(pi) {
-  const queue = new PerFileQueue();
+  /** @type {{ ready: boolean, value: { items: any[], layers: any[], warnings: string[] } | undefined }} */
+  const configCache = { ready: false, value: undefined };
+
   registerDiagnosticsRenderer(pi);
 
+  // Eagerly seed global config on load (mid-session installs need this)
+  await seedPoshifyDefaults();
+  await seedAllInitConfigs();
+
   pi.on('session_start', async (_event, ctx) => {
-    await ensureGlobalConfig(ctx);
+    const configSeeded = await seedPoshifyDefaults();
+    const initSeeded = await seedAllInitConfigs();
+    if ((configSeeded || initSeeded) && ctx?.hasUI) {
+      ctx.ui.notify(`Poshify defaults installed to ${getExtensionDataDir()}`, 'info');
+    }
+
+    // Warm the cache while TUI is idle; avoids flickering trust dialog
+    // during streaming tool results.
+    try {
+      await loadPoshifyConfig(ctx, configCache);
+    } catch {
+      // Trust prompt itself may throw "Cancelled" if the user hits Escape
+      // during session_start. Gracefully ignore; cache stays un-ready
+      // and a later load (e.g. explicit /poshify) will retry.
+    }
   });
+
+  function startPoshifySpinner(ctx, label, target) {
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let frameIndex = 0;
+    const animationId = setInterval(() => {
+      const frame = frames[frameIndex];
+      ctx.ui.setWidget('poshify-loader', [
+        ctx.ui.theme.fg('accent', '┏━━ Pi Poshify Tool ━━━━━━━━━━━━━━━━━━━━━'),
+        `${ctx.ui.theme.fg('muted', '┃')} ${label}`,
+        `${ctx.ui.theme.fg('muted', '┃')} Target: ${ctx.ui.theme.fg('dim', target)}`,
+        ctx.ui.theme.fg('accent', `┗━━ ${frame} Working...`),
+      ]);
+      frameIndex = (frameIndex + 1) % frames.length;
+    }, 80);
+    return animationId;
+  }
+
+  function stopPoshifySpinner(ctx, animationId) {
+    clearInterval(animationId);
+    ctx.ui.setWidget('poshify-loader', undefined);
+  }
 
   pi.registerCommand('poshify', {
     description:
@@ -1101,7 +1882,31 @@ export default async function piPosherExtension(pi) {
     handler: async (args, ctx) => {
       const trimmed = normalizeUnicodeSpaces(args?.trim() || '');
 
-      const config = await loadPoshifyConfig(ctx);
+      let config;
+      try {
+        config = await loadPoshifyConfig(ctx, configCache);
+      } catch (error) {
+        if (error.message === 'Cancelled') {
+          const trustConfigPath = findUp(ctx.cwd, path.join('.pi', 'poshifiers.json'));
+          const displayPath = trustConfigPath
+            ? path.basename(path.dirname(trustConfigPath)) + '/.pi/poshifiers.json'
+            : 'project-local .pi/poshifiers.json';
+          pi.sendMessage(
+            {
+              customType: 'pi-posher',
+              content: '',
+              display: true,
+              details: {
+                path: ctx.cwd,
+                summary: `⚠️ User cancelled request to accept or reject \`${displayPath}\` file as trusted.`,
+              },
+            },
+            { deliverAs: 'steer' },
+          );
+          return;
+        }
+        throw error;
+      }
       const availableInits = config.items
         .filter((item) => item?.['init-setup'])
         .map((item) => item.name)
@@ -1110,7 +1915,7 @@ export default async function piPosherExtension(pi) {
       const usage = [
         ` /poshify (file|dir)          # Run configured tools for file or directory`,
         ` /poshify --init <name>       # Install init configs for a poshifier type`,
-        ` /poshify --fix [file|dir]    # Run ESLint --fix`,
+        ` /poshify --fix [file|dir]    # Run configured fix-tools`,
         ` /poshify --help              # Show this usage`,
         ...(availableInits.length > 0
           ? ['', 'Available --init names: ' + availableInits.join(', ')]
@@ -1123,15 +1928,25 @@ export default async function piPosherExtension(pi) {
             customType: 'pi-posher',
             content: '',
             display: true,
-            details: { path: ctx.cwd, summary: usage },
+            details: {
+              path: ctx.cwd,
+              summary: `${formatConfigHeader(config)}\n\n${usage}`,
+            },
           },
           { deliverAs: 'steer' },
         );
         return;
       }
 
-      if (trimmed === '--init' || trimmed.startsWith('--init ')) {
-        const initName = trimmed.slice(5).trim();
+      // Tokenize the input for robust flag parsing
+      const tokens = trimmed.split(/\s+/).filter(Boolean);
+      const hasInitFlag = tokens.some((t) => t === '--init' || t === '-init');
+      const hasFixFlag = tokens.some((t) => t === '--fix' || t === '-fix');
+
+      if (hasInitFlag) {
+        // Find the name after the --init flag
+        const initIdx = tokens.findIndex((t) => t === '--init' || t === '-init');
+        const initName = tokens.slice(initIdx + 1).find((t) => !t.startsWith('-'));
         if (!initName) {
           pi.sendMessage(
             {
@@ -1149,21 +1964,39 @@ export default async function piPosherExtension(pi) {
         }
         const poshifier = config.items.find((item) => item.name === initName);
         let summary;
+        const initSpinner = poshifier?.['init-setup']
+          ? startPoshifySpinner(ctx, `Installing ${initName} tools...`, ctx.cwd)
+          : undefined;
         try {
           if (!poshifier) {
-            summary = `⚠️ No poshifier named "${initName}" found.${config.warnings.length > 0 ? '\n' + config.warnings.join('\n') : ''}`;
+            summary = `${formatConfigHeader(config)}\n\n⚠️ No poshifier named "${initName}" found.${config.warnings.length > 0 ? '\n' + config.warnings.join('\n') : ''}`;
           } else if (!poshifier['init-setup']) {
-            summary = `⚠️ Poshifier "${initName}" has no init-setup defined.`;
+            summary = `${formatConfigHeader(config)}\n\n⚠️ Poshifier "${initName}" has no init-setup defined.`;
           } else {
             const result = await runInitByName(ctx, poshifier, initName);
-            const parts = [];
+            const fileParts = [];
             if (result.copied.length > 0)
-              parts.push(`Copied: ${result.copied.join(', ')}`);
+              fileParts.push(`Copied: ${result.copied.join(', ')}`);
             if (result.skipped.length > 0)
-              parts.push(`Skipped (already exist): ${result.skipped.join(', ')}`);
+              fileParts.push(
+                `Skipped copying (already exist): ${result.skipped.join(', ')}`,
+              );
             if (result.copied.length === 0 && result.skipped.length === 0)
-              parts.push('No files to copy.');
-            summary = `${result.cwd}\n${parts.join('\n')}`;
+              fileParts.push('No config files to copy.');
+            const toolParts = [];
+            for (const tr of result.toolResults ?? []) {
+              const cmdLine = tr.args?.length
+                ? `${tr.cmd} ${tr.args.join(' ')}`
+                : tr.cmd;
+              toolParts.push(
+                tr.output ? `✅ ${cmdLine}\n${tr.output}` : `✅ ${cmdLine}`,
+              );
+            }
+            const sections = [
+              `${formatConfigHeader(config)}\n\n${fileParts.join('\n')}`,
+            ];
+            if (toolParts.length > 0) sections.push(toolParts.join('\n'));
+            summary = `${result.cwd}\n${sections.join('\n\n')}`;
             if (ctx.hasUI) {
               ctx.ui.notify(
                 `Poshify init for "${initName}" installed to ${result.cwd}`,
@@ -1172,7 +2005,13 @@ export default async function piPosherExtension(pi) {
             }
           }
         } catch (error) {
-          summary = `⚠️ init failed: ${error.message}`;
+          if (error.message === 'Aborted' || error.message === 'Cancelled') {
+            summary = '  Init cancelled';
+          } else {
+            summary = `⚠️ init failed: ${error.message}`;
+          }
+        } finally {
+          if (initSpinner) stopPoshifySpinner(ctx, initSpinner);
         }
 
         pi.sendMessage(
@@ -1187,17 +2026,22 @@ export default async function piPosherExtension(pi) {
         return;
       }
 
-      if (trimmed === '--fix' || trimmed.startsWith('--fix ')) {
-        const fixTarget = trimmed.slice(5).trim() || '.';
+      if (hasFixFlag) {
+        const fixIdx = tokens.findIndex((t) => t === '--fix' || t === '-fix');
+        const fixTarget =
+          tokens.slice(fixIdx + 1).find((t) => !t.startsWith('-')) || '.';
+        const fixSpinner = startPoshifySpinner(ctx, 'Running fix...', fixTarget);
         let summary;
         try {
-          summary = await runEslintFix(ctx, fixTarget);
+          summary = await runFixers(ctx, fixTarget, configCache);
         } catch (error) {
-          if (error.message === 'Aborted') {
-            summary = '  ESLint fix interrupted';
+          if (error.message === 'Aborted' || error.message === 'Cancelled') {
+            summary = '  Fix cancelled';
           } else {
-            summary = `  ESLint fix error: ${error.message}`;
+            summary = `  Fix error: ${error.message}`;
           }
+        } finally {
+          stopPoshifySpinner(ctx, fixSpinner);
         }
         pi.sendMessage(
           {
@@ -1211,70 +2055,21 @@ export default async function piPosherExtension(pi) {
         return;
       }
 
-      const parts = trimmed.split(/\s+/).filter(Boolean);
+      const targetPath = resolveAtPath(trimmed, ctx.cwd);
 
-      if (parts.includes('--fix')) {
-        pi.sendMessage(
-          {
-            customType: 'pi-posher',
-            content: '',
-            display: true,
-            details: {
-              summary: 'Usage: /poshify --fix [file|dir]',
-            },
-          },
-          { deliverAs: 'steer' },
-        );
-        return;
-      }
-
-      if (parts.includes('--init')) {
-        pi.sendMessage(
-          {
-            customType: 'pi-posher',
-            content: '',
-            display: true,
-            details: {
-              summary: 'Usage: /poshify --init',
-            },
-          },
-          { deliverAs: 'steer' },
-        );
-        return;
-      }
-
-      const targetPath = resolveAtPath(args, ctx.cwd);
-
-      const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-      let frameIndex = 0;
-
-      const animationId = setInterval(() => {
-        // This is for the braille dot spinner
-        const frame = frames[frameIndex];
-        // Set the UI Widget (visible above the prompt)
-        ctx.ui.setWidget('poshify-loader', [
-          ctx.ui.theme.fg('accent', '┏━━ Pi Poshify Tool ━━━━━━━━━━━━━━━━━━━━━'),
-          `${ctx.ui.theme.fg('muted', '┃')} Running tools...`,
-          `${ctx.ui.theme.fg('muted', '┃')} Target: ${ctx.ui.theme.fg('dim', targetPath)}`,
-          ctx.ui.theme.fg('accent', `┗━━ ${frame} Working...`),
-        ]);
-        frameIndex = (frameIndex + 1) % frames.length;
-      }, 80); // 80ms is the standard speed for terminal spinners
+      const animationId = startPoshifySpinner(ctx, 'Running tools...', targetPath);
 
       let summary;
       try {
-        summary = await runPoshifyBatch(ctx, targetPath);
+        summary = await runPoshifyBatch(ctx, targetPath, configCache);
       } catch (error) {
-        if (error.message === 'Aborted') {
-          summary = '  Poshify interrupted';
+        if (error.message === 'Aborted' || error.message === 'Cancelled') {
+          summary = '  Poshify cancelled';
         } else {
           summary = `  Poshify error: ${error.message}`;
         }
       } finally {
-        // Important clear the interval
-        clearInterval(animationId);
-        // Remove the widget when finished
-        ctx.ui.setWidget('poshify-loader', undefined);
+        stopPoshifySpinner(ctx, animationId);
       }
 
       if (summary && summary.trim()) {
@@ -1313,7 +2108,11 @@ export default async function piPosherExtension(pi) {
         }),
       }),
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const summary = await runPoshifyBatch(ctx, resolveAtPath(params.path, ctx.cwd));
+        const summary = await runPoshifyBatch(
+          ctx,
+          resolveAtPath(params.path, ctx.cwd),
+          configCache,
+        );
         return {
           content: [{ type: 'text', text: summary || 'No changes or issues found.' }],
           details: {},
@@ -1330,29 +2129,34 @@ export default async function piPosherExtension(pi) {
     if (!inputPath) return undefined;
 
     const absoluteFile = toAbsolutePath(inputPath, ctx.cwd);
-    const summary = await queue.run(absoluteFile, () =>
-      buildPoshifySummary(ctx, inputPath),
-    );
-    if (!summary.trim()) return undefined;
 
-    if (hasIssueOutput(summary)) {
+    if (ctx.hasUI) {
+      ctx.ui.setStatus('posher', `poshify: running ${path.basename(absoluteFile)}...`);
+    }
+
+    let summary;
+    try {
+      summary = await runPoshifyForFileSet(ctx, new Set([absoluteFile]), configCache);
+    } catch (error) {
+      summary = `  Poshify error: ${error.message}`;
+    }
+
+    if (ctx.hasUI) {
+      ctx.ui.setStatus('posher', undefined);
+    }
+
+    if (summary && summary.trim()) {
       pi.sendMessage(
         {
           customType: 'pi-posher',
           content: '',
           display: true,
-          details: {
-            path: absoluteFile,
-            summary,
-            toolCallId: event.toolCallId,
-          },
+          details: { path: ctx.cwd, summary },
         },
         { deliverAs: 'steer' },
       );
     }
 
-    return {
-      content: [...event.content, { type: 'text', text: summary }],
-    };
+    return undefined;
   });
 }
