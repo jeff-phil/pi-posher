@@ -17,15 +17,9 @@
   "engines": {
     "node": ">=20"
   },
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["src", "README.md", "LICENSE"],
   "pi": {
-    "extensions": [
-      "src/index.ts"
-    ]
+    "extensions": ["src/index.ts"]
   },
   "scripts": {},
   "peerDependencies": {

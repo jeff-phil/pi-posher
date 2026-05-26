@@ -138,6 +138,14 @@ Global config is considered trusted because it is user-owned agent configuration
           "cwd": "{root}",
           "timeoutMs": 120000
         }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "semgrep",
+          "args": ["scan", "--json", "-q", "--config", "auto", "{files}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
       ]
     }
   ]
@@ -155,9 +163,10 @@ Each poshifier has an optional `init-setup` block with:
   - Empty glob matches silently skip.
 - `init-tools`: Commands to run during init (e.g., `npm install --save-dev ...`).
 - `fix-tools`: Commands to run for `/poshify --fix` (same schema as `tools`).
+- `audit-tools`: Commands to run for `/poshify --audit` and at `turn_end` after agent edits (same schema as `tools`).
 - `maxFileSizeBytes`: Optional limit in bytes; files larger than this are silently skipped (default 2 MB).
 
-Every tool object (in `tools`, `fix-tools`, or `init-tools`) supports these fields:
+Every tool object (in `tools`, `fix-tools`, `audit-tools`, or `init-tools`) supports these fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -178,6 +187,10 @@ After the agent successfully does a `write` or `edit` operation:
 4. Runs each command in the `tools` array sequentially, in order.
 5. Appends a compact summary to the original tool result, or error details if fails.
 
+At the end of each agent turn, any files written or edited during that turn are collected and run through their matching `audit-tools` in a single batch. Multiple files sharing the same resolved `audit-tools` command are passed together in one invocation by replacing `{files}` with all matched paths. Audit findings are deduplicated across turns (same finding is reported once per session), and all audit output is steered into the agent context so it can react to issues.
+
+This is separate from the per-tool `tools` run, so audit output (e.g. semgrep findings) appears as its own message.
+
 Summaries that contain issues are also sent as a user-visible, tool-styled diagnostic notice.
 
 ### Manually running
@@ -190,6 +203,7 @@ You can also trigger poshify manually with the slash command or the `run_poshify
  /poshify (file|dir)          # Run configured tools for file or directory
  /poshify --init <name>       # Install init configs for a poshifier type
  /poshify --fix [file|dir]    # Run configured fix-tools
+ /poshify --audit [file|dir]  # Run tools & audit-tools for file or directory
  /poshify --help              # Show this usage
 ```
 
@@ -202,6 +216,8 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 - A config like `{name}/foo/bar.json` would be placed at `foo/bar.json` in the project.
 
 **`/poshify --fix [file|dir]`** runs the `fix-tools` configured for each matching poshifier. Each poshifier can define its own fix commands (e.g., `eslint --fix`, `ruff check --fix`, `markdownlint --fix`). Files without configured `fix-tools` are silently skipped.
+
+**`/poshify --audit [file|dir]`** runs both the `tools` and `audit-tools` for each matching poshifier, reporting them as separate sections under a combined `Poshify Audit` header. Files without configured `audit-tools` are silently skipped for that section. This is the same behavior used at turn-end for agent edits.
 
 #### `run_poshify` tool
 
@@ -224,6 +240,7 @@ Placeholders (template tags):
 | `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json` | `/Users/jeffrey/my-project` |
 | `{root}` | Nearest directory containing an `anchor` marker | `/Users/jeffrey/my-project` |
 | `{file}` | Absolute path to the file being processed | `/Users/jeffrey/my-project/src/foo.go` |
+| `{files}` | All matched file paths (only in `audit-tools`; triggers batching) | `src/foo.go src/bar.go` |
 | `{relFile}` | `{file}` relative to `{root}` | `src/foo.go` |
 | `{dir}` | Absolute directory containing the file | `/Users/jeffrey/my-project/src` |
 | `{relDir}` | That directory relative to `{root}` | `src` |

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, keyHint } from '@earendil-works/pi-coding-agent';
 import { Box, Spacer, Text } from '@earendil-works/pi-tui';
 
 // ── glob ──────────────────────────────────────────────────────────────
@@ -51,6 +51,7 @@ function globToRegExp(pattern) {
   }
 
   source += '$';
+  // nosemgrep
   return new RegExp(source);
 }
 
@@ -127,6 +128,12 @@ function isPathIncluded(relativePath, include, exclude) {
 const PLACEHOLDER_PATTERN =
   /\{(workspace|root|file|relFile|dir|relDir|config|configDir|name)\}/g;
 
+const FILES_PLACEHOLDER = '{files}';
+
+// Collect files edited during a turn so turn_end can batch-run audit-tools.
+const turnEndAuditFiles = new Set();
+const seenAuditHashes = new Set();
+
 function applyTemplate(input, values) {
   return input.replace(PLACEHOLDER_PATTERN, (_match, key) => values[key] ?? '');
 }
@@ -144,6 +151,19 @@ function applyTemplateRecord(inputs, values) {
   return out;
 }
 
+function validateAuditCommandForBatching(command) {
+  const hasFiles = (command.args ?? []).some((arg) => arg === FILES_PLACEHOLDER);
+  if (!hasFiles) return null;
+  const perFilePattern = /\{(file|relFile|dir|relDir)\}/;
+  const allParts = [command.cmd, ...(command.args ?? []), command.cwd ?? ''];
+  for (const part of allParts) {
+    if (typeof part === 'string' && perFilePattern.test(part)) {
+      return 'audit command uses {files} alongside per-file placeholders {file}, {relFile}, {dir}, or {relDir}';
+    }
+  }
+  return null;
+}
+
 // ── output ────────────────────────────────────────────────────────────
 
 const DEFAULT_OUTPUT_LIMIT = 4000;
@@ -158,14 +178,6 @@ function commandOutput(result) {
   return truncateOutput(
     [result.stdout, result.stderr].filter((part) => part.trim().length > 0).join('\n'),
   );
-}
-
-function formatCommandIssue(toolId, action, result) {
-  const output = commandOutput(result);
-  const suffix = result.killed ? ' (killed/timeout)' : '';
-  if (!output)
-    return `⚠️ ${toolId} ${action} failed with exit code ${result.code}${suffix}`;
-  return `⚠️ ${toolId} ${action} failed with exit code ${result.code}${suffix}:\n${output}`;
 }
 
 function hasIssueOutput(output) {
@@ -193,6 +205,133 @@ function formatConfigHeader(loaded) {
 function sha256(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
+
+// ── diagnostic pipeline ──────────────────────────────────────────────
+
+function detectOutputFormat(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (typeof arg !== 'string') continue;
+    const lower = arg.toLowerCase();
+    if (lower === '--json') return 'json';
+    if (lower === '--sarif') return 'sarif';
+    if (
+      lower.startsWith('--output-format=') ||
+      lower.startsWith('--format=') ||
+      lower.startsWith('--out-format=')
+    ) {
+      const val = lower.split('=')[1];
+      if (val === 'json') return 'json';
+      if (val === 'sarif') return 'sarif';
+    }
+    if (
+      lower === '--output-format' ||
+      lower === '--format' ||
+      lower === '--out-format' ||
+      lower === '-f' ||
+      lower === '-o'
+    ) {
+      const next = args[i + 1];
+      if (next) {
+        const nextLower = next.toLowerCase();
+        if (nextLower === 'json') return 'json';
+        if (nextLower === 'sarif') return 'sarif';
+      }
+    }
+  }
+  return 'text';
+}
+
+function parseSemgrepJson(stdout) {
+  try {
+    const data = JSON.parse(stdout);
+    return (data.results || []).map((r) => ({
+      tool: 'semgrep',
+      rule: r.check_id || '',
+      message: r.extra?.message || '',
+      file: r.path || '',
+      line: r.start?.line || 0,
+      column: r.start?.col || 0,
+      severity: r.extra?.severity || 'warning',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function parseGenericLines(stdout, stderr) {
+  const text = [stdout, stderr]
+    .filter((s) => typeof s === 'string' && s.trim().length > 0)
+    .join('\n');
+  const results = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    // file:line:col: message
+    const m1 = line.match(/^(.+?):(\d+):(\d+):\s*(.+)$/);
+    if (m1) {
+      results.push({
+        tool: '',
+        rule: '',
+        message: m1[4],
+        file: m1[1],
+        line: parseInt(m1[2], 10),
+        column: parseInt(m1[3], 10),
+      });
+      continue;
+    }
+    // file(line,col): message
+    const m2 = line.match(/^(.+?)\((\d+),(\d+)\):\s*(.+)$/);
+    if (m2) {
+      results.push({
+        tool: '',
+        rule: '',
+        message: m2[4],
+        file: m2[1],
+        line: parseInt(m2[2], 10),
+        column: parseInt(m2[3], 10),
+      });
+      continue;
+    }
+    // file:line: message
+    const m3 = line.match(/^(.+?):(\d+):\s*(.+)$/);
+    if (m3) {
+      results.push({
+        tool: '',
+        rule: '',
+        message: m3[3],
+        file: m3[1],
+        line: parseInt(m3[2], 10),
+        column: 0,
+      });
+    }
+  }
+  return results;
+}
+
+function normalizeMessage(message) {
+  return (message || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function hashFinding(tool, finding) {
+  const parts = [tool, finding.rule || '', normalizeMessage(finding.message)];
+  if (finding.line) parts.push(String(finding.line));
+  return sha256(parts.join('\n')).slice(0, 16);
+}
+
+function formatCompact(finding) {
+  const base = finding.root ?? process.cwd();
+  let relFile = finding.file
+    ? normalizeRelativePath(path.relative(base, finding.file))
+    : '';
+  // Fallback to basename if file is outside the project root
+  if (relFile.startsWith('..')) {
+    relFile = path.basename(finding.file);
+  }
+  const loc = finding.line ? `:${finding.line}` : '';
+  return `${finding.tool || 'tool'}: ${finding.rule || 'finding'} — ${relFile}${loc} — ${finding.message}`;
+}
+
+// ── persistence ───────────────────────────────────────────────────────
 
 function getExtensionDataDir() {
   return path.join(getAgentDir(), 'extensions', 'pi-posher');
@@ -762,6 +901,7 @@ function cleanPoshifier(object) {
   if (typeof object.name !== 'string' || object.name.trim() === '') return undefined;
   const tools = cleanCommands(object.tools);
   const fixTools = cleanCommands(object['fix-tools']);
+  const auditTools = cleanCommands(object['audit-tools']);
   const initSetup = cleanInitSetup(object);
   return {
     name: object.name,
@@ -771,6 +911,7 @@ function cleanPoshifier(object) {
     maxFileSizeBytes: cleanNumber(object.maxFileSizeBytes),
     tools,
     'fix-tools': fixTools,
+    'audit-tools': auditTools,
     'init-setup': initSetup,
   };
 }
@@ -852,6 +993,14 @@ const DEFAULT_POSHIFIERS = [
         timeoutMs: 30000,
       },
     ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
   },
   {
     name: 'javascript',
@@ -906,6 +1055,14 @@ const DEFAULT_POSHIFIERS = [
         args: ['exec', '--', 'eslint', '--fix', '--cache', '{file}'],
         cwd: '{root}',
         timeoutMs: 120000,
+      },
+    ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
       },
     ],
   },
@@ -963,6 +1120,14 @@ const DEFAULT_POSHIFIERS = [
         args: ['exec', '--', 'eslint', '--fix', '--cache', '{file}'],
         cwd: '{root}',
         timeoutMs: 120000,
+      },
+    ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
       },
     ],
   },
@@ -1025,6 +1190,20 @@ const DEFAULT_POSHIFIERS = [
         timeoutMs: 120000,
       },
     ],
+    'audit-tools': [
+      {
+        cmd: 'svelte-check',
+        args: ['--tsconfig', './tsconfig.json'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
   },
   {
     name: 'json',
@@ -1056,6 +1235,14 @@ const DEFAULT_POSHIFIERS = [
         timeoutMs: 15000,
       },
     ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
   },
   {
     name: 'yaml',
@@ -1083,6 +1270,14 @@ const DEFAULT_POSHIFIERS = [
       {
         cmd: 'npm',
         args: ['exec', '--', 'yaml-lint', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
         cwd: '{root}',
         timeoutMs: 15000,
       },
@@ -1122,6 +1317,14 @@ const DEFAULT_POSHIFIERS = [
       {
         cmd: 'npm',
         args: ['exec', '--', 'markdownlint', '--fix', '{file}'],
+        cwd: '{root}',
+        timeoutMs: 15000,
+      },
+    ],
+    'audit-tools': [
+      {
+        cmd: 'semgrep',
+        args: ['scan', '--json', '-q', '--config', 'auto', '{files}'],
         cwd: '{root}',
         timeoutMs: 15000,
       },
@@ -1200,6 +1403,9 @@ function commandsForPoshify(items) {
   const fixTools = commandsForPoshifySection(items, 'fix-tools');
   if (fixTools.length > 0)
     sections.push(`fix-tools:\n${fixTools.map((c) => `  - ${c}`).join('\n')}`);
+  const auditTools = commandsForPoshifySection(items, 'audit-tools');
+  if (auditTools.length > 0)
+    sections.push(`audit-tools:\n${auditTools.map((c) => `  - ${c}`).join('\n')}`);
   return sections.join('\n\n');
 }
 
@@ -1262,6 +1468,16 @@ async function loadPoshifyConfig(ctx, cache) {
 
   const result = { items: mergeLayers(layers), layers, warnings };
 
+  for (const item of result.items) {
+    const auditTools = item['audit-tools'] ?? [];
+    for (const cmd of auditTools) {
+      const error = validateAuditCommandForBatching(cmd);
+      if (error) {
+        warnings.push(`${item.name}: ${error}`);
+      }
+    }
+  }
+
   if (cache) {
     cache.value = result;
     cache.ready = true;
@@ -1273,6 +1489,7 @@ async function loadPoshifyConfig(ctx, cache) {
 // ── extension entrypoint ──────────────────────────────────────────────
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024;
+const COLLAPSED_LINE_LIMIT = 20;
 
 function customMessageText(content, details) {
   const summary = details?.summary;
@@ -1286,21 +1503,38 @@ function customMessageText(content, details) {
 }
 
 function registerDiagnosticsRenderer(pi) {
-  pi.registerMessageRenderer('pi-posher', (message, _options, theme) => {
+  pi.registerMessageRenderer('pi-posher', (message, options, theme) => {
     const text = customMessageText(message.content, message.details);
-    const bgKey = hasIssueOutput(text) ? 'toolErrorBg' : 'toolSuccessBg';
+    const { expanded } = options;
+    let displayText = text;
+
+    const hasIssues = hasIssueOutput(text);
+    if (!expanded && typeof text === 'string') {
+      const lines = text.split('\n');
+      if (lines.length > COLLAPSED_LINE_LIMIT) {
+        const shown = lines.slice(0, COLLAPSED_LINE_LIMIT);
+        const hidden = lines.length - COLLAPSED_LINE_LIMIT;
+        displayText =
+          `${shown.join('\n')}\n` +
+          `${theme.fg('dim', `... (${hidden} more lines)`)} ` +
+          `${theme.fg('muted', keyHint('app.tools.expand', 'to expand'))}`;
+      }
+    }
+
+    const bgKey = hasIssues ? 'toolErrorBg' : 'toolSuccessBg';
     const box = new Box(1, 1, (value) => theme.bg(bgKey, value));
     box.addChild(new Text(theme.fg('toolTitle', theme.bold('poshify')), 0, 0));
-    if (text.trim()) {
+    if (displayText.trim()) {
       box.addChild(new Spacer(1));
-      box.addChild(new Text(theme.fg('toolOutput', text), 0, 0));
+      box.addChild(new Text(theme.fg('toolOutput', displayText), 0, 0));
     }
     return box;
   });
 }
 
 function getEventPath(input) {
-  return typeof input.path === 'string' && input.path.trim() ? input.path : undefined;
+  if (!input || typeof input.path !== 'string') return undefined;
+  return input.path.trim() ? input.path : undefined;
 }
 
 async function fileSizeAllowed(file, limit) {
@@ -1308,23 +1542,52 @@ async function fileSizeAllowed(file, limit) {
   return stat.size <= limit;
 }
 
-function commandDisplayName(cmd, args) {
+const WRAPPER_COMMANDS = new Set([
+  'npx',
+  'npm',
+  'uv',
+  'python',
+  'java',
+  'node',
+  'bun',
+  'bash',
+  'zsh',
+  'sh',
+]);
+
+function getBareCommand(cmd, args) {
   const basename = path.basename(cmd);
-  if (basename === 'npx' && args?.length > 0) {
-    return `npx ${args[0]}`;
+  if (!args || args.length === 0) return basename;
+
+  // npm exec -- <cmd>
+  if (basename === 'npm' && args[0] === 'exec' && args[1] === '--') {
+    return args[2] || 'npm';
   }
-  if (basename === 'uv' && args?.[0] === 'run' && args?.length > 1) {
-    return `uv run ${args[1]}`;
+
+  // uv run [--with <x>] <cmd>
+  if (basename === 'uv' && args[0] === 'run') {
+    let i = 1;
+    while (i < args.length && args[i].startsWith('-')) {
+      i += 1;
+      if (i < args.length && !args[i].startsWith('-')) {
+        i += 1;
+      }
+    }
+    return args[i] || 'uv';
   }
-  if (
-    basename === 'npm' &&
-    args?.[0] === 'exec' &&
-    args?.[1] === '--' &&
-    args?.length > 2
-  ) {
-    return `npm exec ${args[2]}`;
+
+  // npx <cmd>
+  if (basename === 'npx' && args.length > 0) {
+    return args[0];
   }
-  return cmd;
+
+  // generic wrapper: python/java/node/bun/bash/zsh/sh <cmd>
+  if (WRAPPER_COMMANDS.has(basename) && args.length > 0) {
+    const firstNonFlag = args.find((a) => typeof a === 'string' && !a.startsWith('-'));
+    return firstNonFlag || basename;
+  }
+
+  return basename;
 }
 
 async function readFileContent(file) {
@@ -1372,17 +1635,13 @@ async function matchTools(ctx, tools, file) {
   return { matches, warnings };
 }
 
-async function runPoshifierCommand(options, tool, commandIndex, root) {
-  const command = resolveCommand(
-    `${tool.name} ${commandIndex + 1}`,
-    tool.tools[commandIndex],
-    {
-      workspace: options.workspace,
-      root,
-      file: options.file,
-      name: tool.name,
-    },
-  );
+async function runPoshifierCommand(options, tool, commandObj, root) {
+  const command = resolveCommand(`${tool.name} cmd`, commandObj, {
+    workspace: options.workspace,
+    root,
+    file: options.file,
+    name: tool.name,
+  });
 
   if (!isExecutableAvailable(command.cmd)) {
     return {
@@ -1393,28 +1652,38 @@ async function runPoshifierCommand(options, tool, commandIndex, root) {
 
   const before = await readFileContent(options.file);
   const result = await runCommand(command, options.ctx.signal);
+  const bareName = getBareCommand(command.cmd, command.args);
 
   if (result.code === 0) {
     const after = await readFileContent(options.file);
     const relFile = command.placeholders.relFile;
-    const displayName = commandDisplayName(command.cmd, command.args);
     return {
       line:
         before === after
-          ? `✅ ${tool.name}: ${displayName} checked ${relFile}`
-          : `✅ ${tool.name}: ${displayName} modified ${relFile}`,
+          ? `✅ ${tool.name}: ${bareName} checked ${relFile}`
+          : `✅ ${tool.name}: ${bareName} modified ${relFile}`,
       diagnostics: false,
     };
   }
 
+  const output = commandOutput(result);
+  const suffix = result.killed ? ' (killed/timeout)' : '';
+  if (!output) {
+    return {
+      line: `⚠️ ${tool.name}: ${bareName} failed with exit code ${result.code}${suffix}`,
+      diagnostics: true,
+    };
+  }
   return {
-    line: formatCommandIssue(tool.name, command.cmd, result),
+    line: `⚠️ ${tool.name}: ${bareName} failed with exit code ${result.code}${suffix}:\n${output}`,
     diagnostics: true,
   };
 }
 
-async function runTool(options) {
+async function runTool(options, section = 'tools') {
   const { tool, root } = options.match;
+  const sectionTools = tool[section];
+  if (!sectionTools || sectionTools.length === 0) return [];
   const maxFileSizeBytes = tool.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
   if (!(await fileSizeAllowed(options.file, maxFileSizeBytes))) {
     return [
@@ -1423,15 +1692,173 @@ async function runTool(options) {
   }
 
   const lines = [];
-  for (let i = 0; i < tool.tools.length; i += 1) {
-    const result = await runPoshifierCommand(options, tool, i, root);
+  for (let i = 0; i < sectionTools.length; i += 1) {
+    const result = await runPoshifierCommand(options, tool, sectionTools[i], root);
     if (result) lines.push(result.line);
   }
 
   return lines;
 }
 
-async function runPoshifyForFileSet(ctx, files, cache) {
+async function runAuditToolsBatched(ctx, files, loadedItems, workspace) {
+  const warnings = [];
+  const lines = [];
+  const findings = [];
+  const perFileQueue = [];
+  const batchGroups = new Map();
+
+  for (const file of files) {
+    checkAborted(ctx.signal);
+    const { matches, warnings: matchWarnings } = await matchTools(
+      ctx,
+      loadedItems,
+      file,
+    );
+    warnings.push(...matchWarnings);
+
+    for (const match of matches) {
+      const sectionTools = match.tool['audit-tools'];
+      if (!sectionTools || sectionTools.length === 0) continue;
+
+      const maxFileSizeBytes =
+        match.tool.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
+      if (!(await fileSizeAllowed(file, maxFileSizeBytes))) {
+        lines.push(
+          `⚠️ ${match.tool.name}: skipped ${match.relFile}; file exceeds maxFileSizeBytes (${maxFileSizeBytes})`,
+        );
+        continue;
+      }
+
+      for (let i = 0; i < sectionTools.length; i += 1) {
+        const commandObj = sectionTools[i];
+        const resolved = resolveCommand(`${match.tool.name} audit-${i}`, commandObj, {
+          workspace,
+          root: match.root,
+          file,
+          name: match.tool.name,
+        });
+
+        if (!isExecutableAvailable(resolved.cmd)) {
+          lines.push(`⚠️ ${match.tool.name}: command not found: ${resolved.cmd}`);
+          continue;
+        }
+
+        const hasFiles = resolved.args.some((arg) => arg === FILES_PLACEHOLDER);
+        if (!hasFiles) {
+          perFileQueue.push({ file, match, commandIndex: i });
+          continue;
+        }
+
+        const error = validateAuditCommandForBatching(commandObj);
+        if (error) {
+          lines.push(`⚠️ ${match.tool.name}: ${error}`);
+          continue;
+        }
+
+        const batchKey = JSON.stringify({
+          cmd: resolved.cmd,
+          args: resolved.args,
+          cwd: resolved.cwd,
+          env: resolved.env,
+        });
+
+        if (!batchGroups.has(batchKey)) {
+          batchGroups.set(batchKey, {
+            command: resolved,
+            files: [],
+          });
+        }
+        batchGroups.get(batchKey).files.push(file);
+      }
+    }
+  }
+
+  for (const { file, match, commandIndex } of perFileQueue) {
+    checkAborted(ctx.signal);
+    try {
+      const result = await runPoshifierCommand(
+        { ctx, match, file, workspace },
+        match.tool,
+        match.tool['audit-tools'][commandIndex],
+        match.root,
+      );
+      if (result) {
+        lines.push(result.line);
+        // Best-effort: if the per-file audit command reported diagnostics,
+        // create a generic finding so it participates in dedup steering.
+        if (result.diagnostics) {
+          findings.push({
+            tool: match.tool.name,
+            rule: '',
+            message: result.line,
+            file,
+            line: 0,
+            column: 0,
+            root: match.root,
+          });
+        }
+      }
+    } catch (error) {
+      lines.push(`⚠️ ${match.tool.name}: ${error.message}`);
+    }
+  }
+
+  for (const { command, files: batchFiles } of batchGroups.values()) {
+    if (batchFiles.length === 0) continue;
+    checkAborted(ctx.signal);
+
+    const batchedCommand = {
+      ...command,
+      args: command.args.flatMap((arg) =>
+        arg === FILES_PLACEHOLDER ? batchFiles : [arg],
+      ),
+    };
+
+    const result = await runCommand(batchedCommand, ctx.signal);
+    const bareName = getBareCommand(command.cmd, command.args);
+    if (result.code === 0) {
+      const relFiles = batchFiles.map((f) =>
+        normalizeRelativePath(path.relative(command.placeholders.root, f)),
+      );
+      const count = batchFiles.length;
+      const namesStr = relFiles.join(', ');
+      lines.push(
+        `✅ ${bareName} succeeded (${count} file${count !== 1 ? 's' : ''}: ${namesStr})`,
+      );
+    } else {
+      const format = detectOutputFormat(command.args);
+      let toolFindings;
+      if (format === 'json') {
+        toolFindings = parseSemgrepJson(result.stdout);
+      } else {
+        toolFindings = parseGenericLines(result.stdout, result.stderr);
+      }
+      for (const f of toolFindings) {
+        f.tool = bareName;
+        f.root = command.placeholders.root;
+        findings.push(f);
+      }
+      const output = commandOutput(result);
+      const suffix = result.killed ? ' (killed/timeout)' : '';
+      if (toolFindings.length > 0) {
+        const findingLines = toolFindings.map(formatCompact);
+        lines.push(
+          `⚠️ ${bareName} failed with exit code ${result.code}${suffix}:\n${findingLines.join('\n')}`,
+        );
+      } else if (!output) {
+        lines.push(`⚠️ ${bareName} failed with exit code ${result.code}${suffix}`);
+      } else {
+        lines.push(
+          `⚠️ ${bareName} failed with exit code ${result.code}${suffix}:\n${output}`,
+        );
+      }
+    }
+  }
+
+  return { lines, findings, warnings };
+}
+
+async function runPoshifyForFileSet(ctx, files, cache, section = 'tools') {
   if (files.size === 0) return '';
 
   const loaded = await loadPoshifyConfig(ctx, cache);
@@ -1445,8 +1872,24 @@ async function runPoshifyForFileSet(ctx, files, cache) {
       warnings.length > 0
         ? [warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n')]
         : [];
-    if (parts.length === 0) return `${header}:`;
-    return `${header}:\n${parts.join('\n\n')}`;
+    if (parts.length === 0) return { summary: `${header}:`, findings: [] };
+    return { summary: `${header}:\n${parts.join('\n\n')}`, findings: [] };
+  }
+
+  if (section === 'audit-tools') {
+    const {
+      lines,
+      findings,
+      warnings: batchWarnings,
+    } = await runAuditToolsBatched(ctx, files, loaded.items, workspace);
+    warnings.push(...batchWarnings);
+    const header = formatConfigHeader(loaded);
+    const parts = [];
+    if (warnings.length > 0)
+      parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
+    if (lines.length > 0) parts.push(lines.join('\n'));
+    if (parts.length === 0) return { summary: `${header}:`, findings };
+    return { summary: `${header}:\n${parts.join('\n\n')}`, findings };
   }
 
   const allLines = [];
@@ -1460,7 +1903,7 @@ async function runPoshifyForFileSet(ctx, files, cache) {
     warnings.push(...matchWarnings);
     for (const match of matches) {
       try {
-        allLines.push(...(await runTool({ ctx, match, file, workspace })));
+        allLines.push(...(await runTool({ ctx, match, file, workspace }, section)));
       } catch (error) {
         allLines.push(`⚠️ ${match.tool.name}: ${error.message}`);
       }
@@ -1472,8 +1915,8 @@ async function runPoshifyForFileSet(ctx, files, cache) {
   if (warnings.length > 0)
     parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
   if (allLines.length > 0) parts.push(allLines.join('\n'));
-  if (parts.length === 0) return `${header}:`;
-  return `${header}:\n${parts.join('\n\n')}`;
+  if (parts.length === 0) return { summary: `${header}:`, findings: [] };
+  return { summary: `${header}:\n${parts.join('\n\n')}`, findings: [] };
 }
 
 async function* walkFiles(startDir, maxDepth = 10) {
@@ -1509,7 +1952,7 @@ function checkAborted(signal) {
 }
 
 async function runPoshifyBatch(ctx, inputPath, cache) {
-  const absolutePath = toAbsolutePath(inputPath, ctx.cwd);
+  const absolutePath = resolveAtPath(inputPath, ctx.cwd);
   let stats;
   try {
     stats = await fs.stat(absolutePath);
@@ -1561,6 +2004,71 @@ async function runPoshifyBatch(ctx, inputPath, cache) {
   if (warnings.length > 0)
     parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
   if (allLines.length > 0) parts.push(allLines.join('\n'));
+  if (parts.length === 0) return `${header}:`;
+  return `${header}:\n${parts.join('\n\n')}`;
+}
+
+async function runAuditBatch(ctx, inputPath, cache) {
+  const absolutePath = resolveAtPath(inputPath, ctx.cwd);
+  let stats;
+  try {
+    stats = await fs.stat(absolutePath);
+  } catch {
+    return `⚠️ Path not found: ${inputPath}`;
+  }
+
+  const loaded = await loadPoshifyConfig(ctx, cache);
+  checkAborted(ctx.signal);
+  const warnings = [...loaded.warnings];
+  const projectLayer = loaded.layers.find((layer) => layer.scope === 'project');
+  const workspace = projectLayer ? path.dirname(projectLayer.dir) : ctx.cwd;
+
+  const files = [];
+  if (stats.isDirectory()) {
+    for await (const file of walkFiles(absolutePath)) {
+      files.push(file);
+    }
+  } else {
+    files.push(absolutePath);
+  }
+
+  checkAborted(ctx.signal);
+
+  if (files.length === 0) {
+    return `No files found in ${normalizeRelativePath(path.relative(ctx.cwd, absolutePath))}`;
+  }
+
+  const toolLines = [];
+  for (const file of files) {
+    checkAborted(ctx.signal);
+    const { matches, warnings: matchWarnings } = await matchTools(
+      ctx,
+      loaded.items,
+      file,
+    );
+    warnings.push(...matchWarnings);
+    for (const match of matches) {
+      try {
+        toolLines.push(...(await runTool({ ctx, match, file, workspace }, 'tools')));
+      } catch (error) {
+        toolLines.push(`⚠️ ${match.tool.name}: ${error.message}`);
+      }
+    }
+  }
+
+  const {
+    lines: auditLines,
+    findings: _batchedFindings,
+    warnings: batchWarnings,
+  } = await runAuditToolsBatched(ctx, files, loaded.items, workspace);
+  warnings.push(...batchWarnings);
+
+  const header = `${formatConfigHeader(loaded)} --audit`;
+  const parts = [];
+  if (warnings.length > 0)
+    parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
+  if (toolLines.length > 0) parts.push(`Tools:\n${toolLines.join('\n')}`);
+  if (auditLines.length > 0) parts.push(`Audit:\n${auditLines.join('\n')}`);
   if (parts.length === 0) return `${header}:`;
   return `${header}:\n${parts.join('\n\n')}`;
 }
@@ -1791,17 +2299,27 @@ async function runFixers(ctx, inputPath, cache) {
           continue;
         }
         const result = await runCommand(command, ctx.signal);
-        const displayName = commandDisplayName(command.cmd, command.args);
+        const bareName = getBareCommand(command.cmd, command.args);
         const relFile = command.placeholders.relFile;
         if (result.code === 0) {
           const output = commandOutput(result);
           allLines.push(
             output
-              ? `✅ ${match.tool.name}: ${displayName} fixed ${relFile}\n${output}`
-              : `✅ ${match.tool.name}: ${displayName} fixed ${relFile}`,
+              ? `✅ ${match.tool.name}: ${bareName} fixed ${relFile}\n${output}`
+              : `✅ ${match.tool.name}: ${bareName} fixed ${relFile}`,
           );
         } else {
-          allLines.push(formatCommandIssue(match.tool.name, displayName, result));
+          const output = commandOutput(result);
+          const suffix = result.killed ? ' (killed/timeout)' : '';
+          if (!output) {
+            allLines.push(
+              `⚠️ ${match.tool.name}: ${bareName} failed with exit code ${result.code}${suffix}`,
+            );
+          } else {
+            allLines.push(
+              `⚠️ ${match.tool.name}: ${bareName} failed with exit code ${result.code}${suffix}:\n${output}`,
+            );
+          }
         }
       }
     }
@@ -1916,6 +2434,7 @@ export default async function piPosherExtension(pi) {
         ` /poshify (file|dir)          # Run configured tools for file or directory`,
         ` /poshify --init <name>       # Install init configs for a poshifier type`,
         ` /poshify --fix [file|dir]    # Run configured fix-tools`,
+        ` /poshify --audit [file|dir]  # Run tools & audit-tools for file or directory`,
         ` /poshify --help              # Show this usage`,
         ...(availableInits.length > 0
           ? ['', 'Available --init names: ' + availableInits.join(', ')]
@@ -1942,6 +2461,7 @@ export default async function piPosherExtension(pi) {
       const tokens = trimmed.split(/\s+/).filter(Boolean);
       const hasInitFlag = tokens.some((t) => t === '--init' || t === '-init');
       const hasFixFlag = tokens.some((t) => t === '--fix' || t === '-fix');
+      const hasAuditFlag = tokens.some((t) => t === '--audit' || t === '-audit');
 
       if (hasInitFlag) {
         // Find the name after the --init flag
@@ -2055,6 +2575,47 @@ export default async function piPosherExtension(pi) {
         return;
       }
 
+      if (hasAuditFlag) {
+        const auditIdx = tokens.findIndex((t) => t === '--audit' || t === '-audit');
+        const auditTarget =
+          tokens.slice(auditIdx + 1).find((t) => !t.startsWith('-')) || '.';
+        const auditSpinner = startPoshifySpinner(
+          ctx,
+          'Running tools + audit...',
+          auditTarget,
+        );
+        let summary;
+        try {
+          summary = await runAuditBatch(ctx, auditTarget, configCache);
+        } catch (error) {
+          if (error.message === 'Aborted' || error.message === 'Cancelled') {
+            summary = '  Audit cancelled';
+          } else {
+            summary = `  Audit error: ${error.message}`;
+          }
+        } finally {
+          stopPoshifySpinner(ctx, auditSpinner);
+        }
+        const hasIssues = summary.includes('⚠️');
+        const steerContent = hasIssues
+          ? `Poshify audit found issues. Some may be auto-fixable with \`/poshify --fix\`, while others (audit findings) may require manual code changes.\n\n${summary}\n\nWhat would you like to do?`
+          : '';
+        const commandText = `/poshify --audit ${auditTarget || '.'}`;
+        const displaySummary = hasIssues
+          ? `💡 Issues found running: "${commandText}"  Let me know if you want me to fix them.\n\n${summary}`
+          : summary;
+        pi.sendMessage(
+          {
+            customType: 'pi-posher',
+            content: steerContent,
+            display: true,
+            details: { path: ctx.cwd, summary: displaySummary },
+          },
+          { deliverAs: 'steer' },
+        );
+        return;
+      }
+
       const targetPath = resolveAtPath(trimmed, ctx.cwd);
 
       const animationId = startPoshifySpinner(ctx, 'Running tools...', targetPath);
@@ -2129,6 +2690,7 @@ export default async function piPosherExtension(pi) {
     if (!inputPath) return undefined;
 
     const absoluteFile = toAbsolutePath(inputPath, ctx.cwd);
+    turnEndAuditFiles.add(absoluteFile);
 
     if (ctx.hasUI) {
       ctx.ui.setStatus('posher', `poshify: running ${path.basename(absoluteFile)}...`);
@@ -2136,7 +2698,12 @@ export default async function piPosherExtension(pi) {
 
     let summary;
     try {
-      summary = await runPoshifyForFileSet(ctx, new Set([absoluteFile]), configCache);
+      const result = await runPoshifyForFileSet(
+        ctx,
+        new Set([absoluteFile]),
+        configCache,
+      );
+      summary = result.summary;
     } catch (error) {
       summary = `  Poshify error: ${error.message}`;
     }
@@ -2156,6 +2723,54 @@ export default async function piPosherExtension(pi) {
         { deliverAs: 'steer' },
       );
     }
+
+    return undefined;
+  });
+
+  pi.on('turn_end', async (_event, ctx) => {
+    if (turnEndAuditFiles.size === 0) return undefined;
+
+    const files = new Set(turnEndAuditFiles);
+    turnEndAuditFiles.clear();
+
+    let auditResult;
+    try {
+      auditResult = await runPoshifyForFileSet(ctx, files, configCache, 'audit-tools');
+    } catch (error) {
+      auditResult = {
+        summary: `  Poshify Audit error: ${error.message}`,
+        findings: [],
+      };
+    }
+
+    const { summary, findings } = auditResult;
+
+    // Compute hashes and filter to unseen findings
+    const newFindings = [];
+    for (const f of findings) {
+      f.hash = hashFinding(f.tool, f);
+      if (!seenAuditHashes.has(f.hash)) {
+        newFindings.push(f);
+        seenAuditHashes.add(f.hash);
+      }
+    }
+
+    const steerContent =
+      newFindings.length > 0
+        ? `⚠️ Audit: ${newFindings[0]?.tool || 'audit'} found ${newFindings.length} new finding${newFindings.length !== 1 ? 's' : ''}:\n${newFindings.map(formatCompact).join('\n')}`
+        : findings.length > 0
+          ? `⚠️ Audit: ${findings[0]?.tool || 'audit'} failed — all findings previously reported.\n\n${summary}`
+          : summary || 'No audit output';
+
+    pi.sendMessage(
+      {
+        customType: 'pi-posher',
+        content: steerContent,
+        display: true,
+        details: { path: ctx.cwd, summary },
+      },
+      { deliverAs: 'steer' },
+    );
 
     return undefined;
   });

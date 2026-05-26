@@ -45,6 +45,26 @@
           "cwd": "{root}",
           "timeoutMs": 30000
         }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
       ]
     },
     {
@@ -106,6 +126,26 @@
           "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 120000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 15000
         }
       ]
     },
@@ -169,6 +209,26 @@
           "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 120000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 15000
         }
       ]
     },
@@ -236,11 +296,37 @@
           "cwd": "{root}",
           "timeoutMs": 120000
         }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "svelte-check",
+          "args": ["--tsconfig", "./tsconfig.json"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        },
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
       ]
     },
     {
       "name": "json",
-      "include": ["**/*.json"],
+      "include": ["**/*.{json,json.*}"],
       "exclude": ["node_modules/**", "package-lock.json"],
       "anchors": ["package.json"],
       "init-setup": {
@@ -264,6 +350,26 @@
         {
           "cmd": "npm",
           "args": ["exec", "--", "node-jq", "-e", "\"empty\"", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -295,6 +401,26 @@
         {
           "cmd": "npm",
           "args": ["exec", "--", "yaml-lint", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -334,6 +460,26 @@
         {
           "cmd": "npm",
           "args": ["exec", "--", "markdownlint", "--fix", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
