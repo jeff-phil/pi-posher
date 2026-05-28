@@ -1,6 +1,6 @@
 {
   "name": "pi-posher",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Pi extension that automatically runs commands (formatters, linters, SAST, file conversions, etc.) after agent writes and edits",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,8 @@
   },
   "files": ["assets", "CONTRIBUTING.md", "LICENSE", "README.md", "src"],
   "pi": {
-    "extensions": ["src/index.ts"]
+    "extensions": ["src/index.ts"],
+    "image": "https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher.webp"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\"",
