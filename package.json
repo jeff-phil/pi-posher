@@ -1,9 +1,16 @@
 {
   "name": "pi-posher",
   "version": "0.1.5",
-  "description": "Pi extension that automatically runs commands after agent writes and edits",
+  "description": "Pi extension that automatically runs commands (formatters, linters, SAST, file conversions, etc.) after agent writes and edits",
   "type": "module",
   "license": "MIT",
+  "author": "jeffphil",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeff-phil/pi-posher.git"
+  },
+  "homepage": "https://github.com/jeff-phil/pi-posher#readme",
+  "bugs": "https://github.com/jeff-phil/pi-posher/issues",
   "keywords": [
     "pi",
     "pi-package",
@@ -14,14 +21,23 @@
     "conversions",
     "poshify"
   ],
+  "exports": "./src/index.ts",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
-  "files": ["src", "README.md", "LICENSE"],
+  "files": ["assets", "CONTRIBUTING.md", "LICENSE", "README.md", "src"],
   "pi": {
     "extensions": ["src/index.ts"]
   },
-  "scripts": {},
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "lint": "eslint src/ test/",
+    "format": "prettier --write 'src/**/*' 'test/**/*' '*.md' '*.mjs'",
+    "prepublishOnly": "npm test && npm run lint && npx tsc --noEmit"
+  },
+  "dependencies": {
+    "ignore": "^5.3.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

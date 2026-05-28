@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import ts from 'typescript-eslint';
 
 export default [
@@ -5,9 +8,14 @@ export default [
     ...config,
     files: ['**/*.{ts,tsx,mts,cts}'],
   })),
-
   {
     files: ['**/*.{ts,tsx,mts,cts}'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: path.dirname(fileURLToPath(import.meta.url)),
+      },
+    },
     rules: {
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',

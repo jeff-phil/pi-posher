@@ -1,0 +1,285 @@
+#
+# .semgrep.yml
+#
+# Lightweight repo hygiene + security checks
+# for JS/TS + Python + Go + config/docs
+#
+
+rules:
+  #
+  # ============================================================
+  # JavaScript / TypeScript
+  # ============================================================
+  #
+
+  - id: no-debugger-statements
+    languages:
+      - javascript
+      - typescript
+    severity: WARNING
+    message: 'A debugger statement was left in the code.'
+    pattern: debugger;
+
+  - id: no-eval-js
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    message: 'Avoid eval().'
+    pattern: eval(...)
+
+  - id: avoid-child-process-exec
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    message: 'Avoid child_process.exec(). Use execFile/spawn instead.'
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: |
+          import { exec } from 'child_process'
+          ...
+          exec(...)
+      - pattern: |
+          const { exec } = require('child_process')
+          ...
+          exec(...)
+      - pattern: |
+          import * as $CP from 'child_process'
+          ...
+          $CP.exec(...)
+      - pattern: |
+          const $CP = require('child_process')
+          ...
+          $CP.exec(...)
+
+  - id: no-ts-ignore
+    languages:
+      - typescript
+    severity: WARNING
+    message: 'Avoid @ts-ignore unless absolutely necessary.'
+    pattern-regex: '@ts-ignore'
+
+  - id: no-eslint-disable
+    languages:
+      - javascript
+      - typescript
+    severity: INFO
+    message: 'Review eslint-disable usage.'
+    pattern-regex: 'eslint-disable'
+
+  #
+  # ============================================================
+  # Python
+  # ============================================================
+  #
+
+  - id: python-no-eval
+    languages:
+      - python
+    severity: ERROR
+    message: 'Avoid eval() in Python.'
+    pattern: eval(...)
+
+  - id: python-no-exec
+    languages:
+      - python
+    severity: ERROR
+    message: 'Avoid exec() in Python.'
+    pattern: exec(...)
+
+  - id: python-subprocess-shell-true
+    languages:
+      - python
+    severity: ERROR
+    message: 'subprocess with shell=True is dangerous.'
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: '^(run|Popen|call|check_call|check_output)$'
+
+  #
+  # ============================================================
+  # Go
+  # ============================================================
+  #
+
+  - id: go-command-execution
+    languages:
+      - go
+    severity: WARNING
+    message: 'Review os/exec usage carefully.'
+    pattern: exec.Command(...)
+
+  #
+  # ============================================================
+  # Generic hardcoded secrets
+  # ============================================================
+  #
+
+  - id: hardcoded-secret-assignment
+    languages:
+      - javascript
+      - typescript
+      - python
+      - go
+      - json
+      - yaml
+    severity: ERROR
+    message: 'Potential hardcoded secret detected.'
+    patterns:
+      - pattern-regex: |
+          (?i)(password|secret|token|api[_-]?key)
+      - pattern-not-regex: |
+          (?i)(example|dummy|test|changeme|sample)
+
+  - id: github-token
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Possible GitHub token detected.'
+    pattern-regex: 'gh[pousr]_[A-Za-z0-9]{20,}'
+
+  - id: private-key-material
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Private key material detected.'
+    pattern-regex: |
+      -----BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----
+
+  #
+  # ============================================================
+  # npm / package ecosystem
+  # ============================================================
+  #
+
+  - id: npmrc-auth-token
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Potential npm auth token committed.'
+    paths:
+      include:
+        - '**/.npmrc'
+    pattern-regex: '_authToken='
+
+  - id: suspicious-postinstall
+    languages:
+      - json
+    severity: WARNING
+    message: 'Review postinstall scripts carefully.'
+    pattern-regex: '"postinstall"'
+
+  #
+  # ============================================================
+  # Shell / dangerous commands
+  # ============================================================
+  #
+
+  - id: curl-pipe-shell
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Avoid curl | sh patterns.'
+    pattern-regex: |
+      curl\s+.*\|\s*(sh|bash)
+
+  - id: wget-pipe-shell
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Avoid wget | sh patterns.'
+    pattern-regex: |
+      wget\s+.*\|\s*(sh|bash)
+
+  - id: dangerous-rm-rf
+    languages:
+      - generic
+    severity: WARNING
+    message: 'Review rm -rf usage carefully.'
+    pattern-regex: |
+      rm\s+-rf\s+/
+
+  #
+  # ============================================================
+  # Localhost / development leftovers
+  # ============================================================
+  #
+
+  - id: localhost-url-leftover
+    languages:
+      - javascript
+      - typescript
+      - python
+      - go
+      - yaml
+      - json
+    severity: WARNING
+    message: 'Leftover localhost/dev URL.'
+    pattern-regex: |
+      http://(localhost|127\.0\.0\.1)
+
+  #
+  # ============================================================
+  # Markdown / docs scanning
+  # ============================================================
+  #
+
+  - id: markdown-private-key
+    languages:
+      - generic
+    severity: ERROR
+    message: 'Private key material found in markdown/docs.'
+    paths:
+      include:
+        - '**/*.md'
+    pattern-regex: |
+      -----BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----
+
+  #
+  # ============================================================
+  # Agent / CI hygiene
+  # ============================================================
+  #
+
+  - id: skipped-tests
+    languages:
+      - javascript
+      - typescript
+      - python
+      - go
+    severity: INFO
+    message: 'Skipped tests detected.'
+    pattern-regex: |
+      (\.skip\(|@pytest\.mark\.skip|t\.Skip\()
+
+  - id: todo-security
+    languages:
+      - generic
+    severity: INFO
+    message: 'Security-related TODO found.'
+    pattern-regex: |
+      (?i)(TODO|FIXME).*(security|auth|token|secret)
+
+#
+# ============================================================
+# Global paths
+# ============================================================
+#
+
+paths:
+  exclude:
+    - node_modules/**
+    - dist/**
+    - build/**
+    - coverage/**
+    - .svelte-kit/**
+    - vendor/**
+    - target/**
+    - .next/**
+    - .venv*/**
+    - __pycache__/**
+    - '*.min.js'
+    - '*.bundle.js'

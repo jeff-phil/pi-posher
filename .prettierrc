@@ -6,5 +6,11 @@
   "singleQuote": true,
   "trailingComma": "all",
   "bracketSpacing": true,
-  "arrowParens": "always"
+  "arrowParens": "always",
+  "overrides": [
+    {
+      "files": "*.json.default",
+      "options": { "parser": "json" }
+    }
+  ]
 }

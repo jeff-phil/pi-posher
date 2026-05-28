@@ -18,6 +18,26 @@
           "cwd": "{root}",
           "timeoutMs": 30000
         }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 60000
+        }
       ]
     },
     {
@@ -63,7 +83,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
@@ -145,7 +165,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
@@ -228,7 +248,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
@@ -299,8 +319,8 @@
       ],
       "audit-tools": [
         {
-          "cmd": "svelte-check",
-          "args": ["--tsconfig", "./tsconfig.json"],
+          "cmd": "npm",
+          "args": ["exec", "--", "svelte-check", "--tsconfig", "./tsconfig.json"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
@@ -320,13 +340,13 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
     {
       "name": "json",
-      "include": ["**/*.{json,json.*}"],
+      "include": ["**/*.json*"],
       "exclude": ["node_modules/**", "package-lock.json"],
       "anchors": ["package.json"],
       "init-setup": {
@@ -343,13 +363,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "node-jq", "-e", "\"empty\"", "{file}"],
+          "args": ["exec", "--", "node-jq", "-e", ".", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -371,7 +391,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
@@ -422,7 +442,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     },
@@ -481,7 +501,7 @@
             "{files}"
           ],
           "cwd": "{root}",
-          "timeoutMs": 15000
+          "timeoutMs": 60000
         }
       ]
     }

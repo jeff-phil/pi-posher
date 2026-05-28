@@ -13,7 +13,7 @@ async function loadOptionalConfig(modulePath) {
     return Array.isArray(mod.default) ? mod.default : [mod.default];
   } catch (err) {
     if (err.code === 'ERR_MODULE_NOT_FOUND') {
-      console.log(`ℹ️ [ESLint] INFO: Skipping ${modulePath} (file not found)`);
+      console.info(`ℹ️ [ESLint] INFO: Skipping ${modulePath} (file not found)`);
       return []; // Return empty array so it spreads safely
     }
     throw err; // Re-throw real errors (like syntax errors in the config)
@@ -29,7 +29,15 @@ const svelteConfig = await loadOptionalConfig('./eslint-svelte.mjs');
 export default [
   // Global Ignores
   {
-    ignores: ['{node_modules,dist,build,.svelte-kit,npm-global,npm,.local}/**'],
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/.svelte-kit/**',
+      '**/npm-global/**',
+      '**/npm/**',
+      '**/.local/**',
+    ],
   },
 
   // Drop in the dynamically loaded configs above

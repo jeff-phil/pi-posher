@@ -1,11 +1,15 @@
 // eslint-svelte.mjs
+import { createRequire } from 'node:module';
+
 import svelte from 'eslint-plugin-svelte';
 import globals from 'globals';
 import ts from 'typescript-eslint';
 
+const require = createRequire(import.meta.url);
+
 let svelteConfig;
 try {
-  svelteConfig = (await import('./svelte.config.js')).default;
+  svelteConfig = require('./svelte.config.js').default;
 } catch {
   svelteConfig = undefined;
 }

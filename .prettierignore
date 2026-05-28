@@ -1,8 +1,7 @@
 *.lock
 *.min.js
-*.md
 pnpm-lock.yaml
-xcode
+.prettierignore
 
 # Dependencies
 node_modules

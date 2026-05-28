@@ -1,14 +1,20 @@
 # pi-posher
 
-Pi extension that automatically runs tools such as, formatters, linters, SAST, file conversions, etc. after successful `write` / `edit` agent tool calls.
+<p>
+  <img src="assets/pi-posher.webp" alt="Pi Posher" width="1100">
+</p>
 
-Users are also able to run `/poshify` slash command on-demand to validate changes to files made outside Pi, or for adding external files into a project that need to be posh.
+> Pi extension that helps agents and builders keep their code prim and proper.
+
+`pi-posher` automatically runs configured tools such as: formatters, linters, SAST, file conversions, etc. after successful `write` / `edit` agent tool calls.
+
+Users are also able to run `/poshify` slash command on-demand to validate changes to files in newly sourced repos, or for adding external files into a project that need to be posh.
 
 ## Why
 
-Many times IDE's automatically will format, lint, reorganize imports, do security checks, convert files, and run many other tools when saving files. This allows users to immediately know issues and make corrections when it's fresh, vs. going through an entire pipeline.
+Many times IDEs automatically format, lint, reorganize imports, do security checks, convert files, and run many other tools when saving files, creating code outside of your standards. This extension allows users to immediately know issues and fix code issues when it's fresh, vs. going through an entire pipeline.
 
-Agents need the same capabilities in order to format, adjust, check files after edits and write operations.
+Agents need the same capabilities in order to format, adjust, check files after edits and write operations. This may be even more of a need depending on the model being used, or the technology being built.
 
 ## Install
 
@@ -16,7 +22,17 @@ Agents need the same capabilities in order to format, adjust, check files after 
 pi install npm:pi-posher
 ```
 
+## Defaults and prerequisites
+
+On first use, `pi-posher` seeds a global config (`~/.pi/agent/extensions/pi-posher/poshifiers.json`) with default poshifiers for go, python, typescript, javascript, svelte, json, yaml, and markdown. These defaults are a starting point — you should edit or remove any entry to match the tools you actually use.
+
+> **Note:** The default `audit-tools` and most Python tooling rely on [`uv`](https://docs.astral.sh/uv/) to run commands. For the best out-of-box experience, install `uv` so that `semgrep` and `ruff` commands work without modification. If you prefer `pip`, `npm`, `pnpm`, or other runners, update the `cmd` and `args` in the config to suit your environment.
+
 ## Configuration
+
+`pi-posher` automatically respects `.gitignore` and `.ignore` files in the project root (`{workspace}`) when scanning directories or matching files. Any paths listed in those files are skipped entirely — no tools are run against them, and they are pruned during recursive directory walks.
+
+This means you don't need to duplicate `.gitignore` entries in every poshifier's `exclude` array. Only add `exclude` patterns for files that _are_ tracked but should still be skipped by a specific tool (e.g. `vendor/` for Go, but not `node_modules/` which is already in `.gitignore`).
 
 Global config, trusted automatically:
 
@@ -24,27 +40,28 @@ Global config, trusted automatically:
 ~/.pi/agent/extensions/pi-posher/poshifiers.json
 ```
 
-**On first use**, the extension seeds this file with default poshifiers for go, python, typescript, json, yaml, and markdown. You can edit or remove any entry.
+**On first use**, the `pi-posher` seeds this file with default "poshifiers" for go, python, typescript, javascript, svelte, json, yaml, and markdown. You can edit or remove any entry to fit your desired defaults, and add your own tools to run.
 
-Project-local config, requires trust:
+Project local configs can be placed in the project level `.pi` directory:
 
 ```text
 ~/projects/my-project/.pi/poshifiers.json
 ```
 
-Project entries override global entries with the same `name` (go, typescript, python, etc.).
+Project entries override global entries with the same `name` (go, typescript, python, etc.), and entries must be explicitly trusted by the user before running.
 
 ## Trust and security
 
-Project local configs could run arbitrary commands on your machine that are evil in nature.
+Project local configs, especially from unknown repositories, could run arbitrary commands on your machine that are evil in nature.
 
 Here are the guardrails to prevent malicious configs and scripts:
 
 - Project local config content is uniquely hashed
 - Unknown hashes prompt for `Trust once`, `Trust always`, or `Reject`
 - The prompt shows every configured tool command in the project local config file
+- The options `Trust once` and `Reject` are session specific, and won't prompt again until Pi is reloaded or restarted, or hash changes.
 - `Trust always` stores the hash in `~/.pi/agent/extensions/pi-posher/trust/poshifiers.json`
-- Changing the config changes the hash and asks again to trust or reject
+- Changing the project local config changes the hash and asks again to trust or reject
 - Non-interactive mode rejects project local config by default
 - Commands run as `cmd` & `args[]`, so each can be validated against shell injection
 
@@ -55,26 +72,6 @@ Global config is considered trusted because it is user-owned agent configuration
 ```json
 {
   "poshifiers": [
-    {
-      "name": "go",
-      "include": ["**/*.go"],
-      "exclude": ["vendor/**"],
-      "anchors": ["go.mod"],
-      "tools": [
-        {
-          "cmd": "gofmt",
-          "args": ["-w", "{file}"],
-          "cwd": "{root}",
-          "timeoutMs": 25000
-        },
-        {
-          "cmd": "golangci-lint",
-          "args": ["run", "--new-from-rev=HEAD", "--timeout=25s", "./{relDir}"],
-          "cwd": "{root}",
-          "timeoutMs": 30000
-        }
-      ]
-    },
     {
       "name": "python",
       "include": ["**/*.py"],
@@ -92,59 +89,143 @@ Global config is considered trusted because it is user-owned agent configuration
           "cwd": "{root}",
           "timeoutMs": 30000
         }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "uv",
+          "args": ["run", "ruff", "check", "--fix", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 30000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 60000
+        }
       ]
     },
     {
-      "name": "typescript",
-      "include": ["**/*.{ts,tsx,js,jsx,mjs,cjs,svelte}"],
-      "exclude": [
-        "node_modules/**",
-        "dist/**",
-        ".next/**",
-        ".svelte-kit/**",
-        "build/**"
-      ],
+      "name": "json",
+      "include": ["**/*.json*"],
+      "exclude": ["node_modules/**", "package-lock.json"],
       "anchors": ["package.json"],
       "init-setup": {
-        "init-configs": [".prettierrc", ".prettierignore", "eslint.config.mjs", "eslint-ts.mjs"],
+        "init-configs": [".prettierrc", ".prettierignore"],
         "init-tools": [
           {
             "cmd": "npm",
-            "args": ["install", "--save-dev", "prettier", "eslint", "@eslint/js", "globals", "eslint-config-prettier", "eslint-plugin-simple-import-sort", "eslint-plugin-unused-imports", "typescript-eslint"],
+            "args": ["install", "--save-dev", "prettier", "node-jq"],
             "cwd": "{root}",
             "timeoutMs": 120000
           }
         ]
       },
-      "maxFileSizeBytes": 2097152,
       "tools": [
         {
-          "cmd": "prettier",
-          "args": ["--write", "{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{file}"],
           "cwd": "{root}",
-          "timeoutMs": 25000
+          "timeoutMs": 15000
         },
         {
-          "cmd": "eslint",
-          "args": ["{file}"],
+          "cmd": "npm",
+          "args": ["exec", "--", "node-jq", "-e", ".", "{file}"],
           "cwd": "{root}",
-          "timeoutMs": 30000
-        }
-      ],
-      "fix-tools": [
-        {
-          "cmd": "eslint",
-          "args": ["--fix", "{file}"],
-          "cwd": "{root}",
-          "timeoutMs": 120000
+          "timeoutMs": 15000
         }
       ],
       "audit-tools": [
         {
-          "cmd": "semgrep",
-          "args": ["scan", "--json", "-q", "--config", "auto", "{files}"],
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 60000
+        }
+      ]
+    },
+    {
+      "name": "markdown",
+      "include": ["**/*.md"],
+      "exclude": ["node_modules/**"],
+      "anchors": ["package.json"],
+      "init-setup": {
+        "init-configs": [".prettierrc", ".markdownlint.json"],
+        "init-tools": [
+          {
+            "cmd": "npm",
+            "args": ["install", "--save-dev", "prettier", "markdownlint-cli"],
+            "cwd": "{root}",
+            "timeoutMs": 120000
+          }
+        ]
+      },
+      "tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "prettier", "--write", "{file}"],
           "cwd": "{root}",
           "timeoutMs": 15000
+        },
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "markdownlint", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "fix-tools": [
+        {
+          "cmd": "npm",
+          "args": ["exec", "--", "markdownlint", "--fix", "{file}"],
+          "cwd": "{root}",
+          "timeoutMs": 15000
+        }
+      ],
+      "audit-tools": [
+        {
+          "cmd": "uv",
+          "args": [
+            "run",
+            "--with",
+            "semgrep",
+            "semgrep",
+            "scan",
+            "--json",
+            "-q",
+            "--error",
+            "--config",
+            "auto",
+            "{files}"
+          ],
+          "cwd": "{root}",
+          "timeoutMs": 60000
         }
       ]
     }
@@ -166,16 +247,18 @@ Each poshifier has an optional `init-setup` block with:
 - `audit-tools`: Commands to run for `/poshify --audit` and at `turn_end` after agent edits (same schema as `tools`).
 - `maxFileSizeBytes`: Optional limit in bytes; files larger than this are silently skipped (default 2 MB).
 
+> **Note on `anchors`:** If `anchors` is omitted or empty, it defaults to `['.project']`. This means a poshifier without explicit anchors will only match files inside a directory tree that contains a `.project` marker file.
+
 Every tool object (in `tools`, `fix-tools`, `audit-tools`, or `init-tools`) supports these fields:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `cmd` | string | Command to run |
-| `args` | string[] | Arguments passed to the command |
-| `cwd` | string | Working directory (supports placeholders) |
-| `timeoutMs` | number | Timeout in milliseconds (default 15000) |
-| `config` | string | Path to a config file; sets `{config}` and `{configDir}` placeholders |
-| `env` | object | Key/value map merged into the command's environment |
+| Field       | Type     | Description                                                           |
+| ----------- | -------- | --------------------------------------------------------------------- |
+| `cmd`       | string   | Command to run                                                        |
+| `args`      | string[] | Arguments passed to the command                                       |
+| `cwd`       | string   | Working directory (supports placeholders)                             |
+| `timeoutMs` | number   | Timeout in milliseconds (default 15000)                               |
+| `config`    | string   | Path to a config file; sets `{config}` and `{configDir}` placeholders |
+| `env`       | object   | Key/value map merged into the command's environment                   |
 
 ## Behavior
 
@@ -185,13 +268,17 @@ After the agent successfully does a `write` or `edit` operation:
 2. Extension uses `anchors` to find the `{root}`
 3. Skips files above `maxFileSizeBytes`
 4. Runs each command in the `tools` array sequentially, in order.
-5. Appends a compact summary to the original tool result, or error details if fails.
+5. Sends a compact summary as a steer message, or error details if the tool fails.
 
 At the end of each agent turn, any files written or edited during that turn are collected and run through their matching `audit-tools` in a single batch. Multiple files sharing the same resolved `audit-tools` command are passed together in one invocation by replacing `{files}` with all matched paths. Audit findings are deduplicated across turns (same finding is reported once per session), and all audit output is steered into the agent context so it can react to issues.
 
 This is separate from the per-tool `tools` run, so audit output (e.g. semgrep findings) appears as its own message.
 
 Summaries that contain issues are also sent as a user-visible, tool-styled diagnostic notice.
+
+**Note:** Since there could be several `write` and `edit` operations to files during an agent "turn" (which is the agent processing, thinking, working, and responding to a user prompt), you would not want long running tool commands (2+ secs) for each write and edit. That is the main reason in the default configuration, `semgrep` runs in batch at the end of the turn because it could take 5+ seconds even for a basic source file. The disadvantage of audit-tools being run at `turn_end` is you have to reprompt to fix the issues, since it completes after a turn has ended. But the advantage is any files that were written or edited can be batched all together at the end instead of each sequentially.
+
+If the audit tool command and parameters are the same across names (e.g. python, typescript, markdown), then all of those files will be batched into the same audit run as well saving lots of time. Key point, try to keep audit tools as consistent as possible for long running commands like `semgrep`, but specialized tools such as `svelte-check` can also be run as a specific audit tool for any changed svelte files during the turn.
 
 ### Manually running
 
@@ -212,12 +299,12 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 **`/poshify --init <name>`** copies the `init-configs` defined for that poshifier into the current project, seeds user-level overrides from bundled templates if absent, and runs the `init-tools` commands (typically `npm install --save-dev ...`). Existing files in the project are skipped. For example:
 
 - `/poshify --init typescript` copies `.prettierrc`, `.prettierignore`, `eslint.config.mjs`, `eslint-ts.mjs` to the project root and installs ESLint + Prettier.
-- `/poshify --init markdown` copies `.prettierrc` to the project root and `.markdownlint.json` (bundled at `{name}/.markdownlint.json`) to the project root, then installs Prettier + markdownlint-cli.
+- `/poshify --init markdown` copies `.prettierrc` to the project root and `.markdownlint.json` to the project root, then installs Prettier + markdownlint-cli.
 - A config like `{name}/foo/bar.json` would be placed at `foo/bar.json` in the project.
 
 **`/poshify --fix [file|dir]`** runs the `fix-tools` configured for each matching poshifier. Each poshifier can define its own fix commands (e.g., `eslint --fix`, `ruff check --fix`, `markdownlint --fix`). Files without configured `fix-tools` are silently skipped.
 
-**`/poshify --audit [file|dir]`** runs both the `tools` and `audit-tools` for each matching poshifier, reporting them as separate sections under a combined `Poshify Audit` header. Files without configured `audit-tools` are silently skipped for that section. This is the same behavior used at turn-end for agent edits.
+**`/poshify --audit [files|dir]`** runs both the `tools` and `audit-tools` for each matching poshifier, reporting them as separate sections under a combined `Poshify Audit` header. Files without configured `audit-tools` are silently skipped for that section. This is the same behavior used at turn-end for agent edits.
 
 #### `run_poshify` tool
 
@@ -232,52 +319,44 @@ Path rules:
 1. Absolute paths are used as-is.
 2. Relative `cmd`, `config`, and `cwd` values with `/` are resolved relative to `{root}`.
 3. Bare command names are resolved through `PATH`.
+4. Passing paths to `/poshify ...` commands can use standard "@" prefix such as `@some/file` for file discovery.
 
 Placeholders (template tags):
 
-| Placeholder | Meaning | Example |
-| --- | --- | --- |
-| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json` | `/Users/jeffrey/my-project` |
-| `{root}` | Nearest directory containing an `anchor` marker | `/Users/jeffrey/my-project` |
-| `{file}` | Absolute path to the file being processed | `/Users/jeffrey/my-project/src/foo.go` |
-| `{files}` | All matched file paths (only in `audit-tools`; triggers batching) | `src/foo.go src/bar.go` |
-| `{relFile}` | `{file}` relative to `{root}` | `src/foo.go` |
-| `{dir}` | Absolute directory containing the file | `/Users/jeffrey/my-project/src` |
-| `{relDir}` | That directory relative to `{root}` | `src` |
-| `{config}` | Resolved command config path (if set) | |
-| `{configDir}` | Directory containing `{config}` | |
-| `{name}` | Poshifier name (useful in `init-setup` paths and args) | `typescript` |
+| Placeholder   | Meaning                                                             | Example                                |
+| ------------- | ------------------------------------------------------------------- | -------------------------------------- |
+| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json` | `/Users/jeffrey/my-project`            |
+| `{root}`      | Nearest directory containing an `anchor` marker                     | `/Users/jeffrey/my-project`            |
+| `{file}`      | Absolute path to the file being processed                           | `/Users/jeffrey/my-project/src/foo.go` |
+| `{files}`     | All matched file paths (only in `audit-tools`; triggers batching)   | `src/foo.go src/bar.go`                |
+| `{relFile}`   | `{file}` relative to `{root}`                                       | `src/foo.go`                           |
+| `{dir}`       | Absolute directory containing the file                              | `/Users/jeffrey/my-project/src`        |
+| `{relDir}`    | That directory relative to `{root}`                                 | `src`                                  |
+| `{config}`    | Resolved command config path (if set)                               |                                        |
+| `{configDir}` | Directory containing `{config}`                                     |                                        |
+| `{name}`      | Poshifier name (useful in `init-setup` paths and args)              | `typescript`                           |
 
 `{root}` is found by walking up from `{file}` looking for `anchors`. `{workspace}` is where Pi is running. They are usually the same, but in a monorepo where a file is in `packages/bar/` and the anchor (`package.json`) is there, `{root}` = `packages/bar/` while `{workspace}` = the repo root.
 
 ## Output examples
 
-```text
- Poshify:
+While running:
 
- ✅ markdown: /pi-agent/npm-global/bin/prettier checked README.md
- ✅ typescript: /pi-agent/npm-global/bin/prettier checked src/pi-posher.mjs
- ✅ typescript: /pi-agent/npm-global/bin/eslint checked src/pi-posher.mjs
- ✅ json: /pi-agent/npm-global/bin/prettier modified package.json
-```
+<p>
+  <img src="assets/pi-posher-ss-run.webp" alt="Pi Posher running" width="220">
+</p>
 
-```text
- Poshify:
+Successful run with details:
 
- ✅ typescript: /pi-agent/npm-global/bin/prettier checked src/pi-posher.mjs
- ⚠️ typescript /pi-agent/npm-global/bin/eslint failed with exit code 1:
- /Users/jeffrey/devel/pi/pi-posher/src/pi-posher.mjs
-   1:1  error  Run autofix to sort these imports!  simple-import-sort/imports
+<p>
+  <img src="assets/pi-posher-ss-success.webp" alt="Pi Posher success" width="1100">
+</p>
 
- ✖ 1 problem (1 error, 0 warnings)
-   1 error and 0 warnings potentially fixable with the `--fix` option.
-```
+Failed run for full `audit` and details:
 
-```text
- Poshify:
-
- ✅ typescript: eslint fixed src/index.ts
-```
+<p>
+  <img src="assets/pi-posher-ss-err.webp" alt="Pi Posher error" width="1100">
+</p>
 
 ## Disable a poshifier
 
@@ -291,4 +370,4 @@ Remove it from the config, or override with an empty object:
 
 ## Acknowledgement
 
-Security aspects inspired by [pi-code-quality](https://pi.dev/packages/pi-code-quality).
+Security hashing aspects inspired by [pi-code-quality](https://pi.dev/packages/pi-code-quality).

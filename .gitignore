@@ -1,3 +1,9 @@
+# semgrep stuff
+.venv-docker/
+uv.lock
+.ruff_cache
+pyproject.toml
+
 # Dependencies
 node_modules/
 
