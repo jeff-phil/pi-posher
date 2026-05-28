@@ -1,7 +1,7 @@
 {
   "name": "pi-posher",
-  "version": "0.1.6",
-  "description": "Pi extension that automatically runs commands (formatters, linters, SAST, file conversions, etc.) after agent writes and edits",
+  "version": "0.1.7",
+  "description": "Helps clankers keep code prim and proper",
   "type": "module",
   "license": "MIT",
   "author": "jeffphil",
@@ -12,14 +12,20 @@
   "homepage": "https://github.com/jeff-phil/pi-posher#readme",
   "bugs": "https://github.com/jeff-phil/pi-posher/issues",
   "keywords": [
-    "pi",
-    "pi-package",
+    "audit",
     "format",
     "lint",
     "code-quality",
     "sast",
+    "formatters",
+    "linters",
     "conversions",
-    "poshify"
+    "converters",
+    "posher",
+    "postflight",
+    "poshify",
+    "pi",
+    "pi-package"
   ],
   "exports": "./src/index.ts",
   "engines": {
