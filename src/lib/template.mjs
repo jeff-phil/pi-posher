@@ -20,15 +20,20 @@ export function applyTemplateRecord(inputs, values) {
   return out;
 }
 
-export function validateAuditCommandForBatching(command) {
+export function validateBatchCommand(command) {
   const hasFiles = (command.args ?? []).some((arg) => arg === FILES_PLACEHOLDER);
   if (!hasFiles) return null;
   const perFilePattern = /\{(file|relFile|dir|relDir)\}/;
   const allParts = [command.cmd, ...(command.args ?? []), command.cwd ?? ''];
   for (const part of allParts) {
     if (typeof part === 'string' && perFilePattern.test(part)) {
-      return 'audit command uses {files} alongside per-file placeholders {file}, {relFile}, {dir}, or {relDir}';
+      return 'command uses {files} alongside per-file placeholders {file}, {relFile}, {dir}, or {relDir}';
     }
   }
   return null;
+}
+
+/** @deprecated Use validateBatchCommand instead. */
+export function validateAuditCommandForBatching(command) {
+  return validateBatchCommand(command);
 }

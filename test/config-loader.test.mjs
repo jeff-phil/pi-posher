@@ -131,7 +131,7 @@ describe('loadPoshifyConfig caching', () => {
 
   function mockDeps() {
     return {
-      validateAuditCommandForBatching: () => null,
+      validateBatchCommand: () => null,
       askTrust: async () => ({ trusted: false }),
     };
   }

@@ -6,7 +6,7 @@ import { isExecutableAvailable } from './lib/paths.mjs';
  * Run a command via spawn and return a Promise resolving when the process closes.
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, timeout?: number, signal?: AbortSignal, env?: Record<string,string> }} options
+ * @param {{ cwd?: string, timeout?: number, signal?: AbortSignal, env?: Record<string,string> }} options — `timeout` is in milliseconds
  */
 export function execDirect(command, args, options) {
   return new Promise((resolve) => {
@@ -105,5 +105,5 @@ export async function execute(command, signal) {
     };
   }
   const result = await runCommand(command, signal);
-  return { ...result, error: null };
+  return { ...result, error: result.error ?? null };
 }

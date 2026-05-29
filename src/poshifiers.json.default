@@ -8,18 +8,18 @@
       "tools": [
         {
           "cmd": "gofmt",
-          "args": ["-w", "{file}"],
+          "args": ["-w", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
-        },
+        }
+      ],
+      "audit-tools": [
         {
           "cmd": "golangci-lint",
           "args": ["run", "--new-from-rev=HEAD", "--timeout=25s", "./{relDir}"],
           "cwd": "{root}",
           "timeoutMs": 30000
-        }
-      ],
-      "audit-tools": [
+        },
         {
           "cmd": "uv",
           "args": [
@@ -47,13 +47,13 @@
       "tools": [
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "format", "{file}"],
+          "args": ["run", "ruff", "format", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "check", "{file}"],
+          "args": ["run", "ruff", "check", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -61,7 +61,7 @@
       "fix-tools": [
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "check", "--fix", "{file}"],
+          "args": ["run", "ruff", "check", "--fix", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -129,13 +129,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -143,7 +143,7 @@
       "fix-tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 120000
         }
@@ -212,13 +212,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -226,7 +226,7 @@
       "fix-tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 120000
         }
@@ -298,13 +298,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -312,7 +312,7 @@
       "fix-tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "eslint", "--fix", "--cache", "{file}"],
+          "args": ["exec", "--", "eslint", "--fix", "--cache", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 120000
         }
@@ -363,7 +363,7 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
@@ -414,13 +414,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "yaml-lint", "{file}"],
+          "args": ["exec", "--", "yaml-lint", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -465,13 +465,13 @@
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "markdownlint", "{file}"],
+          "args": ["exec", "--", "markdownlint", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -479,7 +479,7 @@
       "fix-tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "markdownlint", "--fix", "{file}"],
+          "args": ["exec", "--", "markdownlint", "--fix", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }

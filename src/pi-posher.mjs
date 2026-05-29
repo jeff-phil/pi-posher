@@ -11,7 +11,7 @@ import {
 } from './init-seeder.mjs';
 import { formatConfigHeader, hasIssueOutput } from './lib/output.mjs';
 import { normalizeUnicodeSpaces, resolveAtPath, toAbsolutePath } from './lib/paths.mjs';
-import { validateAuditCommandForBatching } from './lib/template.mjs';
+import { validateBatchCommand } from './lib/template.mjs';
 import { formatCompact, hashFinding } from './parser.mjs';
 import { getEventPath, runPoshify } from './poshify.mjs';
 import { execute } from './runner.mjs';
@@ -68,7 +68,7 @@ function startPoshifySpinner(ctx, label, target) {
     ctx.ui.setWidget('poshify-loader', [
       ctx.ui.theme.fg('accent', '┏━━ Pi Poshify Tool ━━━━━━━━━━━━━━━━━━━━━'),
       `${ctx.ui.theme.fg('muted', '┃')} ${label}`,
-      `${ctx.ui.theme.fg('muted', '┃')} Target: ${ctx.ui.theme.fg('dim', target)}`,
+      `${ctx.ui.theme.fg('muted', '┃')} Target: ${ctx.ui.theme.fg('dim', target === '.' ? '{current dir}' : target)}`,
       ctx.ui.theme.fg('accent', `┗━━ ${frame} Working...`),
     ]);
     frameIndex = (frameIndex + 1) % frames.length;
@@ -109,7 +109,7 @@ export default async function piPosherExtension(pi) {
 
     try {
       await loadPoshifyConfig(ctx, configCache, {
-        validateAuditCommandForBatching,
+        validateBatchCommand,
         askTrust: (opts) => askProjectConfigTrust({ ...opts, ctx }),
       });
     } catch (err) {
@@ -130,7 +130,7 @@ export default async function piPosherExtension(pi) {
       let config;
       try {
         config = await loadPoshifyConfig(ctx, configCache, {
-          validateAuditCommandForBatching,
+          validateBatchCommand,
           askTrust: (opts) => askProjectConfigTrust({ ...opts, ctx }),
         });
       } catch (error) {
@@ -166,10 +166,10 @@ export default async function piPosherExtension(pi) {
         .sort();
 
       const usage = [
-        ` /poshify (file|dir)          # Run configured tools for file or directory`,
+        ` /poshify (file|dir)...       # Run configured tools for file(s) or directory(ies)`,
         ` /poshify --init <name>       # Install init configs for a poshifier type`,
-        ` /poshify --fix [file|dir]    # Run configured fix-tools`,
-        ` /poshify --audit [file|dir]  # Run tools & audit-tools for file or directory`,
+        ` /poshify --fix [file|dir]... # Run configured fix-tools`,
+        ` /poshify --audit [file|dir]... # Run tools & audit-tools for file(s) or directory(ies)`,
         ` /poshify --help              # Show this usage`,
         ...(availableInits.length > 0
           ? ['', 'Available --init names: ' + availableInits.join(', ')]
@@ -281,15 +281,29 @@ export default async function piPosherExtension(pi) {
         return;
       }
 
+      function targetsAfter(flagIdx) {
+        const t = flagIdx >= 0 ? tokens.slice(flagIdx + 1) : tokens;
+        return t.filter((tok) => !tok.startsWith('-'));
+      }
+
+      function formatSpinnerTargets(targets) {
+        if (targets.length <= 2) return targets.join(', ');
+        return `${targets.slice(0, 2).join(', ')} +${targets.length - 2} more`;
+      }
+
       if (hasFixFlag) {
         const fixIdx = tokens.findIndex((t) => t === '--fix' || t === '-fix');
-        const fixTarget =
-          tokens.slice(fixIdx + 1).find((t) => !t.startsWith('-')) || '.';
-        const fixSpinner = startPoshifySpinner(ctx, 'Running fix...', fixTarget);
+        const fixTargets = targetsAfter(fixIdx);
+        if (fixTargets.length === 0) fixTargets.push('.');
+        const fixSpinner = startPoshifySpinner(
+          ctx,
+          'Running fix...',
+          formatSpinnerTargets(fixTargets),
+        );
         let summary;
         try {
           const result = await runPoshify(ctx, {
-            input: { path: fixTarget },
+            input: { paths: fixTargets },
             sections: ['fix-tools'],
             label: '--fix',
             cache: configCache,
@@ -309,7 +323,7 @@ export default async function piPosherExtension(pi) {
             customType: 'pi-posher',
             content: summary,
             display: true,
-            details: { path: ctx.cwd, summary },
+            details: { path: fixTargets.join(', '), summary },
           },
           { deliverAs: 'steer' },
         );
@@ -318,17 +332,17 @@ export default async function piPosherExtension(pi) {
 
       if (hasAuditFlag) {
         const auditIdx = tokens.findIndex((t) => t === '--audit' || t === '-audit');
-        const auditTarget =
-          tokens.slice(auditIdx + 1).find((t) => !t.startsWith('-')) || '.';
+        const auditTargets = targetsAfter(auditIdx);
+        if (auditTargets.length === 0) auditTargets.push('.');
         const auditSpinner = startPoshifySpinner(
           ctx,
           'Running tools + audit...',
-          auditTarget,
+          formatSpinnerTargets(auditTargets),
         );
         let summary;
         try {
           const result = await runPoshify(ctx, {
-            input: { path: auditTarget },
+            input: { paths: auditTargets },
             sections: ['tools', 'audit-tools'],
             label: '--audit',
             cache: configCache,
@@ -347,7 +361,7 @@ export default async function piPosherExtension(pi) {
         const steerContent = hasIssues
           ? `Poshify audit found issues. Some may be auto-fixable with \`/poshify --fix\`, while others (audit findings) may require manual code changes.\n\n${summary}\n\nWhat would you like to do?`
           : '';
-        const commandText = `/poshify --audit ${auditTarget || '.'}`;
+        const commandText = `/poshify --audit ${auditTargets.join(' ')}`;
         const displaySummary = hasIssues
           ? `💡 Issues found running: "${commandText}"  Let me know if you want me to fix them.\n\n${summary}`
           : summary;
@@ -356,20 +370,41 @@ export default async function piPosherExtension(pi) {
             customType: 'pi-posher',
             content: steerContent,
             display: true,
-            details: { path: ctx.cwd, summary: displaySummary },
+            details: { path: auditTargets.join(', '), summary: displaySummary },
           },
           { deliverAs: 'steer' },
         );
         return;
       }
 
-      const targetPath = resolveAtPath(trimmed, ctx.cwd);
-      const animationId = startPoshifySpinner(ctx, 'Running tools...', targetPath);
+      const plainTargets = targetsAfter(-1);
+      if (plainTargets.length === 0) {
+        const helpSummary = `${formatConfigHeader(config)}\n\n${usage}`;
+        pi.sendMessage(
+          {
+            customType: 'pi-posher',
+            content: helpSummary,
+            display: true,
+            details: {
+              path: ctx.cwd,
+              summary: helpSummary,
+            },
+          },
+          { deliverAs: 'steer' },
+        );
+        return;
+      }
+
+      const animationId = startPoshifySpinner(
+        ctx,
+        'Running tools...',
+        formatSpinnerTargets(plainTargets),
+      );
 
       let summary;
       try {
         const result = await runPoshify(ctx, {
-          input: { path: targetPath },
+          input: { paths: plainTargets },
           cache: configCache,
         });
         summary = result.summary;
@@ -389,7 +424,7 @@ export default async function piPosherExtension(pi) {
             customType: 'pi-posher',
             content: summary,
             display: true,
-            details: { path: targetPath, summary },
+            details: { path: plainTargets.join(', '), summary },
           },
           { deliverAs: 'steer' },
         );

@@ -270,15 +270,17 @@ After the agent successfully does a `write` or `edit` operation:
 4. Runs each command in the `tools` array sequentially, in order.
 5. Sends a compact summary as a steer message, or error details if the tool fails.
 
-At the end of each agent turn, any files written or edited during that turn are collected and run through their matching `audit-tools` in a single batch. Multiple files sharing the same resolved `audit-tools` command are passed together in one invocation by replacing `{files}` with all matched paths. Audit findings are deduplicated across turns (same finding is reported once per session), and all audit output is steered into the agent context so it can react to issues.
+When a slash command (`/poshify`, `/poshify --fix`, `/poshify --audit`) is used, or when `audit-tools` run at `turn_end`, all matched files are collected and grouped by their resolved command configuration. Commands that contain a `{files}` placeholder are batched — all matching files sharing the exact same resolved command are passed together in one invocation by replacing `{files}` with the collected paths. This works for `tools`, `fix-tools`, and `audit-tools`.
 
-This is separate from the per-tool `tools` run, so audit output (e.g. semgrep findings) appears as its own message.
+To avoid shell ARG_MAX limits, batched files are further split into sub-batches of up to **100 files** per invocation.
 
-Summaries that contain issues are also sent as a user-visible, tool-styled diagnostic notice.
+At `turn_end`, audit findings are deduplicated across turns (same finding is reported once per session), and all audit output is steered into the agent context so it can react to issues.
+
+Agent `write` and `edit` operations still run `tools` per-file (not batched for the turn), so you get immediate feedback after each edit.
 
 **Note:** Since there could be several `write` and `edit` operations to files during an agent "turn" (which is the agent processing, thinking, working, and responding to a user prompt), you would not want long running tool commands (2+ secs) for each write and edit. That is the main reason in the default configuration, `semgrep` runs in batch at the end of the turn because it could take 5+ seconds even for a basic source file. The disadvantage of audit-tools being run at `turn_end` is you have to reprompt to fix the issues, since it completes after a turn has ended. But the advantage is any files that were written or edited can be batched all together at the end instead of each sequentially.
 
-If the audit tool command and parameters are the same across names (e.g. python, typescript, markdown), then all of those files will be batched into the same audit run as well saving lots of time. Key point, try to keep audit tools as consistent as possible for long running commands like `semgrep`, but specialized tools such as `svelte-check` can also be run as a specific audit tool for any changed svelte files during the turn.
+If the tool command and parameters are the same across names (e.g. python, typescript, markdown), then all of those files will be batched into the same run as well saving lots of time. Key point, try to keep tools as consistent as possible for long running commands like `semgrep`, but specialized tools such as `svelte-check` can also be run as a specific audit tool for any changed svelte files during the turn.
 
 ### Manually running
 
@@ -287,11 +289,11 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 #### `/poshify` slash command
 
 ```text
- /poshify (file|dir)          # Run configured tools for file or directory
- /poshify --init <name>       # Install init configs for a poshifier type
- /poshify --fix [file|dir]    # Run configured fix-tools
- /poshify --audit [file|dir]  # Run tools & audit-tools for file or directory
- /poshify --help              # Show this usage
+ /poshify (file|dir)...         # Run configured tools for file(s) or directory(ies)
+ /poshify --init <name>         # Install init configs for a poshifier type
+ /poshify --fix [file|dir]...   # Run configured fix-tools
+ /poshify --audit [file|dir]... # Run tools & audit-tools for file(s) or directory(ies)
+ /poshify --help                # Show this usage
 ```
 
 `/poshify` with no arguments shows help message, including the list of available `--init` names.
@@ -323,18 +325,18 @@ Path rules:
 
 Placeholders (template tags):
 
-| Placeholder   | Meaning                                                             | Example                                |
-| ------------- | ------------------------------------------------------------------- | -------------------------------------- |
-| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json` | `/Users/jeffrey/my-project`            |
-| `{root}`      | Nearest directory containing an `anchor` marker                     | `/Users/jeffrey/my-project`            |
-| `{file}`      | Absolute path to the file being processed                           | `/Users/jeffrey/my-project/src/foo.go` |
-| `{files}`     | All matched file paths (only in `audit-tools`; triggers batching)   | `src/foo.go src/bar.go`                |
-| `{relFile}`   | `{file}` relative to `{root}`                                       | `src/foo.go`                           |
-| `{dir}`       | Absolute directory containing the file                              | `/Users/jeffrey/my-project/src`        |
-| `{relDir}`    | That directory relative to `{root}`                                 | `src`                                  |
-| `{config}`    | Resolved command config path (if set)                               |                                        |
-| `{configDir}` | Directory containing `{config}`                                     |                                        |
-| `{name}`      | Poshifier name (useful in `init-setup` paths and args)              | `typescript`                           |
+| Placeholder   | Meaning                                                                                   | Example                                |
+| ------------- | ----------------------------------------------------------------------------------------- | -------------------------------------- |
+| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json`                       | `/Users/jeffrey/my-project`            |
+| `{root}`      | Nearest directory containing an `anchor` marker                                           | `/Users/jeffrey/my-project`            |
+| `{file}`      | Absolute path to the file being processed                                                 | `/Users/jeffrey/my-project/src/foo.go` |
+| `{files}`     | All matched file paths (triggers batching; use in `tools`, `fix-tools`, or `audit-tools`) | `src/foo.go src/bar.go`                |
+| `{relFile}`   | `{file}` relative to `{root}`                                                             | `src/foo.go`                           |
+| `{dir}`       | Absolute directory containing the file                                                    | `/Users/jeffrey/my-project/src`        |
+| `{relDir}`    | That directory relative to `{root}`                                                       | `src`                                  |
+| `{config}`    | Resolved command config path (if set)                                                     |                                        |
+| `{configDir}` | Directory containing `{config}`                                                           |                                        |
+| `{name}`      | Poshifier name (useful in `init-setup` paths and args)                                    | `typescript`                           |
 
 `{root}` is found by walking up from `{file}` looking for `anchors`. `{workspace}` is where Pi is running. They are usually the same, but in a monorepo where a file is in `packages/bar/` and the anchor (`package.json`) is there, `{root}` = `packages/bar/` while `{workspace}` = the repo root.
 

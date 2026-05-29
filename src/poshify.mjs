@@ -23,7 +23,7 @@ import {
   formatToolSuccess,
   getBareCommand,
 } from './lib/reporter.mjs';
-import { validateAuditCommandForBatching } from './lib/template.mjs';
+import { validateBatchCommand } from './lib/template.mjs';
 import {
   detectOutputFormat,
   formatCompact,
@@ -140,26 +140,59 @@ export async function* walkFiles(startDir, ig, igRoot, maxDepth = 25) {
 
 async function resolveFiles(input, cwd, ig, igRoot) {
   if (input.files) {
-    return { files: [...input.files], error: undefined, absolutePath: undefined };
+    return { files: [...input.files], errors: [], absolutePaths: [] };
   }
 
-  const absolutePath = resolveAtPath(input.path, cwd);
-  let stats;
-  try {
-    stats = await fs.stat(absolutePath);
-  } catch {
-    return { files: [], error: `⚠️ Path not found: ${input.path}`, absolutePath };
-  }
-
-  const files = [];
-  if (stats.isDirectory()) {
-    for await (const file of walkFiles(absolutePath, ig, igRoot)) {
-      files.push(file);
+  if (input.path) {
+    const absolutePath = resolveAtPath(input.path, cwd);
+    let stats;
+    try {
+      stats = await fs.stat(absolutePath);
+    } catch {
+      return {
+        files: [],
+        errors: [`⚠️ Path not found: ${input.path}`],
+        absolutePaths: [absolutePath],
+      };
     }
-  } else {
-    files.push(absolutePath);
+
+    const files = [];
+    if (stats.isDirectory()) {
+      for await (const file of walkFiles(absolutePath, ig, igRoot)) {
+        files.push(file);
+      }
+    } else {
+      files.push(absolutePath);
+    }
+    return { files, errors: [], absolutePaths: [absolutePath] };
   }
-  return { files, error: undefined, absolutePath };
+
+  if (input.paths && input.paths.length > 0) {
+    const files = [];
+    const errors = [];
+    const absolutePaths = [];
+    for (const p of input.paths) {
+      const absolutePath = resolveAtPath(p, cwd);
+      absolutePaths.push(absolutePath);
+      let stats;
+      try {
+        stats = await fs.stat(absolutePath);
+      } catch {
+        errors.push(`⚠️ Path not found: ${p}`);
+        continue;
+      }
+      if (stats.isDirectory()) {
+        for await (const file of walkFiles(absolutePath, ig, igRoot)) {
+          files.push(file);
+        }
+      } else {
+        files.push(absolutePath);
+      }
+    }
+    return { files, errors, absolutePaths };
+  }
+
+  return { files: [], errors: [], absolutePaths: [] };
 }
 
 async function runToolCommand(ctx, match, file, workspace, commandObj) {
@@ -169,6 +202,11 @@ async function runToolCommand(ctx, match, file, workspace, commandObj) {
     file,
     name: match.tool.name,
   });
+
+  // In per-file mode, {files} expands to the single file path.
+  command.args = command.args.flatMap((arg) =>
+    arg === '{files}' ? [command.placeholders.file] : [arg],
+  );
 
   const before = await readFileContent(file);
   const result = await execute(command, ctx.signal);
@@ -207,6 +245,11 @@ async function runFixCommand(ctx, match, file, workspace, commandObj) {
     name: match.tool.name,
   });
 
+  // In per-file mode, {files} expands to the single file path.
+  command.args = command.args.flatMap((arg) =>
+    arg === '{files}' ? [command.placeholders.file] : [arg],
+  );
+
   const result = await execute(command, ctx.signal);
   const bareName = getBareCommand(command.cmd, command.args);
 
@@ -235,16 +278,14 @@ async function runFixCommand(ctx, match, file, workspace, commandObj) {
   };
 }
 
-async function runAuditToolsBatched(ctx, files, loadedItems, workspace, ig, igRoot) {
+async function collectMatches(ctx, files, loadedItems, section, ig, igRoot) {
   const warnings = [];
-  const lines = [];
-  const findings = [];
-  const runOnceGroups = new Map();
-  const batchGroups = new Map();
+  const skippedLines = [];
+  const matches = [];
 
   for (const file of files) {
     checkAborted(ctx.signal);
-    const { matches, warnings: matchWarnings } = await matchTools(
+    const { matches: fileMatches, warnings: matchWarnings } = await matchTools(
       ctx,
       loadedItems,
       file,
@@ -253,8 +294,8 @@ async function runAuditToolsBatched(ctx, files, loadedItems, workspace, ig, igRo
     );
     warnings.push(...matchWarnings);
 
-    for (const match of matches) {
-      const sectionTools = match.tool['audit-tools'];
+    for (const match of fileMatches) {
+      const sectionTools = match.tool[section];
       if (!sectionTools || sectionTools.length === 0) continue;
 
       const maxFileSizeBytes =
@@ -266,146 +307,188 @@ async function runAuditToolsBatched(ctx, files, loadedItems, workspace, ig, igRo
         allowed = false;
       }
       if (!allowed) {
-        lines.push(
+        skippedLines.push(
           `⚠️ ${match.tool.name}: skipped ${match.relFile}; file exceeds maxFileSizeBytes (${maxFileSizeBytes})`,
         );
         continue;
       }
 
       for (let i = 0; i < sectionTools.length; i += 1) {
-        const commandObj = sectionTools[i];
-        const resolved = resolveCommand(`${match.tool.name} audit-${i}`, commandObj, {
-          workspace,
-          root: match.root,
-          file,
-          name: match.tool.name,
-        });
-
-        const hasFiles = resolved.args.some((arg) => arg === '{files}');
-        if (!hasFiles) {
-          // Dedup key: JSON.stringify preserves key insertion order for
-          // objects built from parsed config, so identical configs match.
-          const onceKey = JSON.stringify({
-            cmd: resolved.cmd,
-            args: resolved.args,
-            cwd: resolved.cwd,
-            env: resolved.env,
-          });
-
-          if (!runOnceGroups.has(onceKey)) {
-            runOnceGroups.set(onceKey, {
-              command: resolved,
-              files: [],
-              toolName: match.tool.name,
-            });
-          }
-          runOnceGroups.get(onceKey).files.push(file);
-          continue;
-        }
-
-        const error = validateAuditCommandForBatching(commandObj);
-        if (error) {
-          lines.push(`⚠️ ${match.tool.name}: ${error}`);
-          continue;
-        }
-
-        // Dedup key: JSON.stringify preserves key insertion order for
-        // objects built from parsed config, so identical configs match.
-        const batchKey = JSON.stringify({
-          cmd: resolved.cmd,
-          args: resolved.args,
-          cwd: resolved.cwd,
-          env: resolved.env,
-        });
-
-        if (!batchGroups.has(batchKey)) {
-          batchGroups.set(batchKey, {
-            command: resolved,
-            files: [],
-            toolName: match.tool.name,
-          });
-        }
-        batchGroups.get(batchKey).files.push(file);
+        matches.push({ file, match, commandObj: sectionTools[i], toolIndex: i });
       }
     }
   }
 
-  for (const { command, files: onceFiles, toolName } of runOnceGroups.values()) {
-    if (onceFiles.length === 0) continue;
-    checkAborted(ctx.signal);
+  return { matches, warnings, skippedLines };
+}
 
-    const result = await execute(command, ctx.signal);
-    const bareName = getBareCommand(command.cmd, command.args);
+async function runSectionBatched(
+  ctx,
+  files,
+  loadedItems,
+  workspace,
+  section,
+  ig,
+  igRoot,
+) {
+  const lines = [];
+  const findings = [];
+  const runOnceGroups = new Map();
+  const batchGroups = new Map();
 
-    if (result.error === 'not_found') {
-      lines.push(formatNotFound(toolName, command.cmd));
+  const { matches, warnings, skippedLines } = await collectMatches(
+    ctx,
+    files,
+    loadedItems,
+    section,
+    ig,
+    igRoot,
+  );
+  lines.push(...skippedLines);
+
+  for (const { file, match, commandObj, toolIndex } of matches) {
+    const resolved = resolveCommand(
+      `${match.tool.name} ${section}-${toolIndex}`,
+      commandObj,
+      {
+        workspace,
+        root: match.root,
+        file,
+        name: match.tool.name,
+      },
+    );
+
+    const hasFiles = resolved.args.some((arg) => arg === '{files}');
+    if (!hasFiles) {
+      // Dedup key: JSON.stringify preserves key insertion order for
+      // objects built from parsed config, so identical configs match.
+      const onceKey = JSON.stringify({
+        cmd: resolved.cmd,
+        args: resolved.args,
+        cwd: resolved.cwd,
+        env: resolved.env,
+      });
+
+      if (!runOnceGroups.has(onceKey)) {
+        runOnceGroups.set(onceKey, {
+          command: resolved,
+          files: [],
+          toolName: match.tool.name,
+        });
+      }
+      runOnceGroups.get(onceKey).files.push(file);
       continue;
     }
 
-    if (result.code === 0) {
-      const relFiles = onceFiles.map((f) =>
-        normalizeRelativePath(path.relative(command.placeholders.root, f)),
-      );
-      lines.push(formatRunOnceSuccess(bareName, relFiles));
-    } else {
-      const format = detectOutputFormat(command.args);
-      let toolFindings;
-      if (format === 'json') {
-        toolFindings = parseSemgrepJson(result.stdout);
+    const error = validateBatchCommand(commandObj);
+    if (error) {
+      lines.push(`⚠️ ${match.tool.name}: ${error}`);
+      continue;
+    }
+
+    // Dedup key: JSON.stringify preserves key insertion order for
+    // objects built from parsed config, so identical configs match.
+    const batchKey = JSON.stringify({
+      cmd: resolved.cmd,
+      args: resolved.args,
+      cwd: resolved.cwd,
+      env: resolved.env,
+    });
+
+    if (!batchGroups.has(batchKey)) {
+      batchGroups.set(batchKey, {
+        command: resolved,
+        files: [],
+        toolName: match.tool.name,
+      });
+    }
+    batchGroups.get(batchKey).files.push(file);
+  }
+
+  const BATCH_SIZE = 100;
+
+  for (const { command, files: onceFiles, toolName } of runOnceGroups.values()) {
+    for (let i = 0; i < onceFiles.length; i += BATCH_SIZE) {
+      const chunk = onceFiles.slice(i, i + BATCH_SIZE);
+      if (chunk.length === 0) continue;
+      checkAborted(ctx.signal);
+
+      const result = await execute(command, ctx.signal);
+      const bareName = getBareCommand(command.cmd, command.args);
+
+      if (result.error === 'not_found') {
+        lines.push(formatNotFound(toolName, command.cmd));
+        continue;
+      }
+
+      if (result.code === 0) {
+        const relFiles = chunk.map((f) =>
+          normalizeRelativePath(path.relative(command.placeholders.root, f)),
+        );
+        lines.push(formatRunOnceSuccess(bareName, relFiles));
       } else {
-        toolFindings = parseGenericLines(result.stdout, result.stderr);
+        const format = detectOutputFormat(command.args);
+        let toolFindings;
+        if (format === 'json') {
+          toolFindings = parseSemgrepJson(result.stdout);
+        } else {
+          toolFindings = parseGenericLines(result.stdout, result.stderr);
+        }
+        for (const f of toolFindings) {
+          f.tool = bareName;
+          f.root = command.placeholders.root;
+          findings.push(f);
+        }
+        const output = commandOutput(result);
+        const findingLines =
+          toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
+        lines.push(formatBatchFailure(bareName, result, findingLines, output));
       }
-      for (const f of toolFindings) {
-        f.tool = bareName;
-        f.root = command.placeholders.root;
-        findings.push(f);
-      }
-      const output = commandOutput(result);
-      const findingLines =
-        toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
-      lines.push(formatBatchFailure(bareName, result, findingLines, output));
     }
   }
 
   for (const { command, files: batchFiles, toolName } of batchGroups.values()) {
-    if (batchFiles.length === 0) continue;
-    checkAborted(ctx.signal);
+    for (let i = 0; i < batchFiles.length; i += BATCH_SIZE) {
+      const chunk = batchFiles.slice(i, i + BATCH_SIZE);
+      if (chunk.length === 0) continue;
+      checkAborted(ctx.signal);
 
-    const batchedCommand = {
-      ...command,
-      args: command.args.flatMap((arg) => (arg === '{files}' ? batchFiles : [arg])),
-    };
+      const batchedCommand = {
+        ...command,
+        args: command.args.flatMap((arg) => (arg === '{files}' ? chunk : [arg])),
+      };
 
-    const result = await execute(batchedCommand, ctx.signal);
-    const bareName = getBareCommand(command.cmd, command.args);
+      const result = await execute(batchedCommand, ctx.signal);
+      const bareName = getBareCommand(command.cmd, command.args);
 
-    if (result.error === 'not_found') {
-      lines.push(formatNotFound(toolName ?? bareName, batchedCommand.cmd));
-      continue;
-    }
+      if (result.error === 'not_found') {
+        lines.push(formatNotFound(toolName ?? bareName, batchedCommand.cmd));
+        continue;
+      }
 
-    if (result.code === 0) {
-      const relFiles = batchFiles.map((f) =>
-        normalizeRelativePath(path.relative(command.placeholders.root, f)),
-      );
-      lines.push(formatBatchSuccess(bareName, relFiles));
-    } else {
-      const format = detectOutputFormat(command.args);
-      let toolFindings;
-      if (format === 'json') {
-        toolFindings = parseSemgrepJson(result.stdout);
+      if (result.code === 0) {
+        const relFiles = chunk.map((f) =>
+          normalizeRelativePath(path.relative(command.placeholders.root, f)),
+        );
+        lines.push(formatBatchSuccess(bareName, relFiles));
       } else {
-        toolFindings = parseGenericLines(result.stdout, result.stderr);
+        const format = detectOutputFormat(command.args);
+        let toolFindings;
+        if (format === 'json') {
+          toolFindings = parseSemgrepJson(result.stdout);
+        } else {
+          toolFindings = parseGenericLines(result.stdout, result.stderr);
+        }
+        for (const f of toolFindings) {
+          f.tool = bareName;
+          f.root = command.placeholders.root;
+          findings.push(f);
+        }
+        const output = commandOutput(result);
+        const findingLines =
+          toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
+        lines.push(formatBatchFailure(bareName, result, findingLines, output));
       }
-      for (const f of toolFindings) {
-        f.tool = bareName;
-        f.root = command.placeholders.root;
-        findings.push(f);
-      }
-      const output = commandOutput(result);
-      const findingLines =
-        toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
-      lines.push(formatBatchFailure(bareName, result, findingLines, output));
     }
   }
 
@@ -422,57 +505,28 @@ async function runPerFileSection(
   igRoot,
 ) {
   const lines = [];
-  const warnings = [];
 
-  for (const file of files) {
-    checkAborted(ctx.signal);
-    const { matches, warnings: matchWarnings } = await matchTools(
-      ctx,
-      loadedItems,
-      file,
-      ig,
-      igRoot,
-    );
-    warnings.push(...matchWarnings);
+  const { matches, warnings, skippedLines } = await collectMatches(
+    ctx,
+    files,
+    loadedItems,
+    section,
+    ig,
+    igRoot,
+  );
+  lines.push(...skippedLines);
 
-    for (const match of matches) {
-      const sectionTools = match.tool[section];
-      if (!sectionTools || sectionTools.length === 0) continue;
-
-      const maxFileSizeBytes =
-        match.tool.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
-      let allowed;
-      try {
-        allowed = await fileSizeAllowed(file, maxFileSizeBytes);
-      } catch {
-        allowed = false;
+  for (const { file, match, commandObj } of matches) {
+    try {
+      if (section === 'fix-tools') {
+        const result = await runFixCommand(ctx, match, file, workspace, commandObj);
+        lines.push(result.line);
+      } else {
+        const result = await runToolCommand(ctx, match, file, workspace, commandObj);
+        lines.push(result.line);
       }
-      if (!allowed) {
-        lines.push(
-          `⚠️ ${match.tool.name}: skipped ${match.relFile}; file exceeds maxFileSizeBytes (${maxFileSizeBytes})`,
-        );
-        continue;
-      }
-
-      for (const commandObj of sectionTools) {
-        try {
-          if (section === 'fix-tools') {
-            const result = await runFixCommand(ctx, match, file, workspace, commandObj);
-            lines.push(result.line);
-          } else {
-            const result = await runToolCommand(
-              ctx,
-              match,
-              file,
-              workspace,
-              commandObj,
-            );
-            lines.push(result.line);
-          }
-        } catch (error) {
-          lines.push(formatError(match.tool.name, error));
-        }
-      }
+    } catch (error) {
+      lines.push(formatError(match.tool.name, error));
     }
   }
 
@@ -481,7 +535,7 @@ async function runPerFileSection(
 
 function buildConfigDeps(ctx) {
   return {
-    validateAuditCommandForBatching,
+    validateBatchCommand,
     askTrust: (opts) => askProjectConfigTrust({ ...opts, ctx }),
   };
 }
@@ -489,7 +543,7 @@ function buildConfigDeps(ctx) {
 /**
  * Run poshify tools for a set of files or a path.
  * @param {any} ctx
- * @param {{ input: { files?: Set<string>, path?: string }, sections?: string[], label?: string, cache?: object }} options
+ * @param {{ input: { files?: Set<string>, path?: string, paths?: string[] }, sections?: string[], label?: string, cache?: object }} options
  * @returns {Promise<{summary: string, findings: any[], warnings: string[]}>}
  */
 export async function runPoshify(ctx, options) {
@@ -510,6 +564,7 @@ export async function runPoshify(ctx, options) {
   const igRoot = ctx.cwd;
 
   let files;
+  let pathErrors = [];
   if (options.input?.files) {
     const { files: resolvedFiles } = await resolveFiles(
       options.input,
@@ -518,20 +573,34 @@ export async function runPoshify(ctx, options) {
       igRoot,
     );
     files = resolvedFiles;
+  } else if (options.input?.paths) {
+    const { errors, files: resolvedFiles } = await resolveFiles(
+      options.input,
+      ctx.cwd,
+      ig,
+      igRoot,
+    );
+    files = resolvedFiles;
+    pathErrors = errors;
+    if (files.length === 0 && errors.length > 0) {
+      const header = label ? `${formatConfigHeader(loaded)} ${label}` : undefined;
+      const summary = header ? `${header}:\n${errors.join('\n')}` : errors.join('\n');
+      return { summary, findings: [], warnings };
+    }
   } else if (options.input?.path) {
     const {
-      error,
+      errors,
       files: resolvedFiles,
-      absolutePath,
+      absolutePaths,
     } = await resolveFiles(options.input, ctx.cwd, ig, igRoot);
-    if (error) {
+    if (errors.length > 0) {
       const header = label ? `${formatConfigHeader(loaded)} ${label}` : undefined;
-      const summary = header ? `${header}:\n${error}` : error;
+      const summary = header ? `${header}:\n${errors[0]}` : errors[0];
       return { summary, findings: [], warnings };
     }
     files = resolvedFiles;
     if (files.length === 0) {
-      const relPath = normalizeRelativePath(path.relative(ctx.cwd, absolutePath));
+      const relPath = normalizeRelativePath(path.relative(ctx.cwd, absolutePaths[0]));
       return { summary: `No files found in ${relPath}`, findings: [], warnings };
     }
   } else {
@@ -551,12 +620,22 @@ export async function runPoshify(ctx, options) {
 
   for (const section of sections) {
     checkAborted(ctx.signal);
-    if (section === 'audit-tools') {
+    const isAgentOps = !!options.input?.files;
+    const shouldBatch = section === 'audit-tools' || !isAgentOps;
+    if (shouldBatch) {
       const {
         lines,
         findings,
         warnings: w,
-      } = await runAuditToolsBatched(ctx, files, loaded.items, workspace, ig, igRoot);
+      } = await runSectionBatched(
+        ctx,
+        files,
+        loaded.items,
+        workspace,
+        section,
+        ig,
+        igRoot,
+      );
       sectionLines.set(section, lines);
       allFindings.push(...findings);
       warnings.push(...w);
@@ -597,7 +676,7 @@ export async function runPoshify(ctx, options) {
     }
   }
 
-  const uniqueWarnings = [...new Set(warnings)];
+  const uniqueWarnings = [...new Set([...pathErrors, ...warnings])];
   const summary = assembleSummary(header, uniqueWarnings, lines);
   return { summary, findings: allFindings, warnings: uniqueWarnings };
 }

@@ -39,7 +39,7 @@ describe('poshify integration', () => {
     return { ready: true, value: { items, layers: [], warnings: [] }, cwd };
   }
 
-  it('runs a tool for a matched file and reports success', async () => {
+  it('runs a tool per-file with input.files (agent ops)', async () => {
     const dir = await makeProject({
       '.project': '',
       'src/index.js': 'const x = 1;\n',
@@ -64,11 +64,45 @@ describe('poshify integration', () => {
       dir,
     );
     const result = await runPoshify(mockCtx(dir), {
-      input: { path: path.join(dir, 'src', 'index.js') },
+      input: { files: new Set([path.join(dir, 'src', 'index.js')]) },
       cache,
     });
     assert.ok(result.summary.includes('✅ js:'));
     assert.ok(result.summary.includes('src/index.js'));
+    assert.strictEqual(result.findings.length, 0);
+  });
+
+  it('batches tools with input.path (slash command)', async () => {
+    const dir = await makeProject({
+      '.project': '',
+      'src/a.js': '',
+      'src/b.js': '',
+    });
+    const cache = cachedConfig(
+      [
+        {
+          name: 'js',
+          include: ['**/*.js'],
+          anchors: ['.project'],
+          tools: [
+            {
+              cmd: 'node',
+              args: ['-e', '0', '{files}'],
+              cwd: '{root}',
+              timeoutMs: 5000,
+            },
+          ],
+        },
+      ],
+      dir,
+    );
+    const result = await runPoshify(mockCtx(dir), {
+      input: { path: path.join(dir, 'src') },
+      cache,
+    });
+    assert.ok(result.summary.includes('✅'));
+    assert.ok(result.summary.includes('succeeded'));
+    assert.ok(result.summary.includes('2 file'));
     assert.strictEqual(result.findings.length, 0);
   });
 
@@ -249,5 +283,76 @@ describe('poshify integration', () => {
     });
     assert.ok(result.summary.includes('⚠️'));
     assert.ok(result.summary.includes('failed with exit code 1'));
+  });
+
+  it('batches tools with multiple input.paths', async () => {
+    const dir = await makeProject({
+      '.project': '',
+      'src/a.js': '',
+      'lib/b.js': '',
+    });
+    const cache = cachedConfig(
+      [
+        {
+          name: 'js',
+          include: ['**/*.js'],
+          anchors: ['.project'],
+          tools: [
+            {
+              cmd: 'node',
+              args: ['-e', '0', '{files}'],
+              cwd: '{root}',
+              timeoutMs: 5000,
+            },
+          ],
+        },
+      ],
+      dir,
+    );
+    const result = await runPoshify(mockCtx(dir), {
+      input: {
+        paths: [path.join(dir, 'src', 'a.js'), path.join(dir, 'lib', 'b.js')],
+      },
+      cache,
+    });
+    assert.ok(result.summary.includes('✅'));
+    assert.ok(result.summary.includes('succeeded'));
+    assert.ok(result.summary.includes('2 file'));
+    assert.strictEqual(result.findings.length, 0);
+  });
+
+  it('warns on missing paths but continues with valid ones', async () => {
+    const dir = await makeProject({
+      '.project': '',
+      'src/a.js': '',
+    });
+    const cache = cachedConfig(
+      [
+        {
+          name: 'js',
+          include: ['**/*.js'],
+          anchors: ['.project'],
+          tools: [
+            {
+              cmd: 'node',
+              args: ['-e', '0', '{files}'],
+              cwd: '{root}',
+              timeoutMs: 5000,
+            },
+          ],
+        },
+      ],
+      dir,
+    );
+    const result = await runPoshify(mockCtx(dir), {
+      input: {
+        paths: [path.join(dir, 'src', 'a.js'), path.join(dir, 'missing.js')],
+      },
+      cache,
+    });
+    assert.ok(result.summary.includes('✅'));
+    assert.ok(result.summary.includes('succeeded'));
+    assert.ok(result.summary.includes('1 file'));
+    assert.ok(result.warnings.some((w) => w.includes('Path not found')));
   });
 });

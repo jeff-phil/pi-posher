@@ -87,16 +87,28 @@ export function cleanPoshifier(object) {
   };
 }
 
-export function parsePoshifyItems(parsed) {
+export function parsePoshifyItems(parsed, warnings = []) {
   const root = asObject(parsed);
-  const poshifiers = Array.isArray(root?.poshifiers) ? root.poshifiers : [];
+  if (!Array.isArray(root?.poshifiers)) {
+    warnings.push('missing or invalid "poshifiers" array');
+    return [];
+  }
   const out = [];
 
-  for (const item of poshifiers) {
+  for (let i = 0; i < root.poshifiers.length; i += 1) {
+    const item = root.poshifiers[i];
     const object = asObject(item);
-    if (!object) continue;
+    if (!object) {
+      warnings.push(`poshifiers[${i}]: not an object, skipped`);
+      continue;
+    }
     const cleaned = cleanPoshifier(object);
-    if (cleaned) out.push(cleaned);
+    if (cleaned) {
+      out.push(cleaned);
+    } else {
+      const name = typeof object.name === 'string' ? `"${object.name}"` : '(unnamed)';
+      warnings.push(`poshifiers[${i}] (${name}): missing required fields, skipped`);
+    }
   }
 
   return out;
@@ -112,13 +124,16 @@ export async function readJsonLayer(options) {
   }
 
   const parsed = JSON.parse(raw);
+  const parseWarnings = [];
+  const items = options.parseItems(parsed, parseWarnings);
   return {
     scope: options.scope,
     path: options.filePath,
     dir: path.dirname(options.filePath),
     raw,
     hash: sha256(raw),
-    items: options.parseItems(parsed),
+    items,
+    warnings: parseWarnings,
   };
 }
 
@@ -134,13 +149,16 @@ export async function readBundledDefaultsLayer() {
   try {
     const raw = await fs.readFile(defaultSource, 'utf8');
     const parsed = JSON.parse(raw);
+    const warnings = [];
+    const items = parsePoshifyItems(parsed, warnings);
     return {
       scope: 'defaults',
       path: defaultSource,
       dir: path.dirname(defaultSource),
       raw,
       hash: sha256(raw),
-      items: parsePoshifyItems(parsed),
+      items,
+      warnings,
     };
   } catch {
     // fall through to code defaults (ENOENT, SyntaxError, etc.)
@@ -222,7 +240,7 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
     return cache.value;
   }
 
-  const { validateAuditCommandForBatching, askTrust } = deps;
+  const { validateBatchCommand, askTrust } = deps;
   const warnings = [];
   const layers = [];
   const globalPath = path.join(getExtensionDataDir(), 'poshifiers.json');
@@ -233,7 +251,10 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
       filePath: globalPath,
       parseItems: parsePoshifyItems,
     });
-    if (globalLayer) layers.push(globalLayer);
+    if (globalLayer) {
+      layers.push(globalLayer);
+      if (globalLayer.warnings?.length) warnings.push(...globalLayer.warnings);
+    }
   } catch (error) {
     warnings.push(`Failed to load global poshify config: ${error.message}`);
   }
@@ -252,6 +273,7 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
         parseItems: parsePoshifyItems,
       });
       if (projectLayer) {
+        if (projectLayer.warnings?.length) warnings.push(...projectLayer.warnings);
         const decision = await askTrust({
           ctx,
           kind: 'poshify',
@@ -279,11 +301,13 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
   const result = { items: mergeLayers(layers), layers, warnings };
 
   for (const item of result.items) {
-    const auditTools = item['audit-tools'] ?? [];
-    for (const cmd of auditTools) {
-      const error = validateAuditCommandForBatching(cmd);
-      if (error) {
-        warnings.push(`${item.name}: ${error}`);
+    for (const section of ['tools', 'fix-tools', 'audit-tools']) {
+      const sectionTools = item[section] ?? [];
+      for (const cmd of sectionTools) {
+        const error = validateBatchCommand(cmd);
+        if (error) {
+          warnings.push(`${item.name}: ${error}`);
+        }
       }
     }
   }
