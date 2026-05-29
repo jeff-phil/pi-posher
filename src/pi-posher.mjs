@@ -245,6 +245,49 @@ export default async function piPosherExtension(pi) {
     }
   });
 
+  // Quick poshify shortcut: ?posh <path> runs poshify without invoking the LLM
+  pi.on('input', async (event, ctx) => {
+    if (!event.text?.startsWith('?posh ')) {
+      return { action: 'continue' };
+    }
+
+    // During steering, skip the exec call — corrections should be fast
+    if (event.streamingBehavior === 'steer') {
+      ctx.ui?.notify('?posh deferred until idle', 'info');
+      return { action: 'continue' };
+    }
+
+    const target = event.text.slice(6).trim();
+    if (!target) {
+      ctx.ui?.notify('Usage: ?posh <file|dir>', 'warning');
+      return { action: 'handled' };
+    }
+
+    let summary;
+    try {
+      const result = await runPoshify(ctx, {
+        input: { paths: [target] },
+        cache: configCache,
+        showInfo: true,
+      });
+      summary = result.summary;
+    } catch (error) {
+      summary = `  Poshify error: ${error.message}`;
+    }
+
+    pi.sendMessage(
+      {
+        customType: 'pi-posher',
+        content: summary,
+        display: true,
+        details: { path: target, summary },
+      },
+      { deliverAs: 'steer' },
+    );
+
+    return { action: 'handled' };
+  });
+
   pi.registerCommand('poshify', {
     description:
       'Run configured tools on a file or directory (/poshify --help for more)',
@@ -458,6 +501,14 @@ export default async function piPosherExtension(pi) {
         const auditIdx = tokens.findIndex((t) => t === '--audit' || t === '-audit');
         const auditTargets = targetsAfter(auditIdx);
         if (auditTargets.length === 0) auditTargets.push('.');
+
+        if (ctx.isIdle && !ctx.isIdle()) {
+          ctx.ui?.notify(
+            'Agent is busy; audit will queue after the current turn.',
+            'info',
+          );
+        }
+
         const auditSpinner = startPoshifySpinner(
           ctx,
           'Running poshify tools + audit...',
@@ -599,6 +650,11 @@ export default async function piPosherExtension(pi) {
     if (event.toolName !== 'write' && event.toolName !== 'edit') return undefined;
     if (event.isError) return undefined;
 
+    // Skip per-file formatting when user already queued a steer or follow-up
+    if (ctx.hasPendingMessages && ctx.hasPendingMessages()) {
+      return undefined;
+    }
+
     const inputPath = getEventPath(event.input);
     if (!inputPath) return undefined;
 
@@ -641,6 +697,12 @@ export default async function piPosherExtension(pi) {
 
   pi.on('turn_end', async (_event, ctx) => {
     if (turnEndAuditFiles.size === 0) return undefined;
+
+    // Defer expensive audit-tools when user has queued steers or follow-ups.
+    // This keeps the agent responsive instead of blocking on long scans.
+    if (ctx.hasPendingMessages && ctx.hasPendingMessages()) {
+      return undefined;
+    }
 
     const files = new Set(turnEndAuditFiles);
     turnEndAuditFiles.clear();
