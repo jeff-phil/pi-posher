@@ -568,4 +568,19 @@ export default async function piPosherExtension(pi) {
 
     return undefined;
   });
+
+  pi.on('context', async (event) => {
+    return {
+      messages: event.messages.filter((msg) => {
+        if (msg.role !== 'custom' || msg.customType !== 'pi-posher') {
+          return true;
+        }
+        const text =
+          typeof msg.content === 'string'
+            ? msg.content
+            : (msg.content?.map((c) => c.text).join('') ?? '');
+        return hasIssueOutput(text);
+      }),
+    };
+  });
 }
