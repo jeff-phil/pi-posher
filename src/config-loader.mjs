@@ -235,9 +235,40 @@ export function initConfigsForPoshify(items) {
 
 // ── main loader ───────────────────────────────────────────────────────
 
+async function getLayerMtimes(layers) {
+  const mtimes = {};
+  for (const layer of layers) {
+    if (!layer.path || layer.path.startsWith('<')) continue;
+    try {
+      const stat = await fs.stat(layer.path);
+      mtimes[layer.path] = stat.mtimeMs;
+    } catch {
+      // file may have been deleted
+    }
+  }
+  return mtimes;
+}
+
 export async function loadPoshifyConfig(ctx, cache, deps) {
   if (cache && cache.ready && cache.cwd === ctx.cwd) {
-    return cache.value;
+    if (cache.mtimes) {
+      let stale = false;
+      for (const [p, oldMtime] of Object.entries(cache.mtimes)) {
+        try {
+          const stat = await fs.stat(p);
+          if (stat.mtimeMs !== oldMtime) {
+            stale = true;
+            break;
+          }
+        } catch {
+          stale = true;
+          break;
+        }
+      }
+      if (!stale) return cache.value;
+    } else {
+      return cache.value;
+    }
   }
 
   const { validateBatchCommand, askTrust } = deps;
@@ -290,7 +321,7 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
           );
       }
     } catch (error) {
-      if (error.message === 'Cancelled') {
+      if (error?.message === 'Cancelled') {
         warnings.push(`${projectPath}: project-local config rejected by user`);
       } else {
         warnings.push(`Failed to load project poshify config: ${error.message}`);
@@ -316,6 +347,7 @@ export async function loadPoshifyConfig(ctx, cache, deps) {
     cache.value = result;
     cache.ready = true;
     cache.cwd = ctx.cwd;
+    cache.mtimes = await getLayerMtimes(layers);
   }
 
   return result;

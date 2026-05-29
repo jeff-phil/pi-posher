@@ -103,11 +103,6 @@ export async function matchTools(ctx, tools, file, ig, igRoot) {
   return { matches, warnings };
 }
 
-export async function fileSizeAllowed(file, limit) {
-  const stat = await fs.stat(file);
-  return stat.size <= limit;
-}
-
 /**
  * Directory names that are always skipped during recursive walks,
  * even if not listed in .gitignore. These are non-source directories
@@ -300,13 +295,16 @@ async function collectMatches(ctx, files, loadedItems, section, ig, igRoot) {
 
       const maxFileSizeBytes =
         match.tool.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
-      let allowed;
+      let stat;
       try {
-        allowed = await fileSizeAllowed(file, maxFileSizeBytes);
+        stat = await fs.stat(file);
       } catch {
-        allowed = false;
+        skippedLines.push(
+          `⚠️ ${match.tool.name}: skipped ${match.relFile}; unable to stat file`,
+        );
+        continue;
       }
-      if (!allowed) {
+      if (stat.size > maxFileSizeBytes) {
         skippedLines.push(
           `⚠️ ${match.tool.name}: skipped ${match.relFile}; file exceeds maxFileSizeBytes (${maxFileSizeBytes})`,
         );
@@ -322,6 +320,31 @@ async function collectMatches(ctx, files, loadedItems, section, ig, igRoot) {
   return { matches, warnings, skippedLines };
 }
 
+const PER_FILE_PLACEHOLDER = /\{(file|relFile|dir|relDir)\}/;
+
+function collectDedupInfoNotes(matches, section) {
+  const notes = [];
+  const seen = new Set();
+  for (const { match, commandObj } of matches) {
+    const allParts = [commandObj.cmd, ...(commandObj.args ?? []), commandObj.cwd ?? ''];
+    const hasPerFile = allParts.some(
+      (p) => typeof p === 'string' && PER_FILE_PLACEHOLDER.test(p),
+    );
+    const hasFiles = (commandObj.args ?? []).some((arg) => arg === '{files}');
+    if (hasPerFile && !hasFiles) {
+      const bareName = getBareCommand(commandObj.cmd, commandObj.args);
+      const key = `${match.tool.name}:${section}:${bareName}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        notes.push(
+          `ℹ️ ${match.tool.name}: ${section} command ${bareName} uses per-file placeholders ({file}, {relFile}, {dir}, {relDir}) without {files}; it will run once per matched file instead of being deduplicated`,
+        );
+      }
+    }
+  }
+  return notes;
+}
+
 async function runSectionBatched(
   ctx,
   files,
@@ -330,6 +353,7 @@ async function runSectionBatched(
   section,
   ig,
   igRoot,
+  showInfo,
 ) {
   const lines = [];
   const findings = [];
@@ -345,6 +369,7 @@ async function runSectionBatched(
     igRoot,
   );
   lines.push(...skippedLines);
+  const infoNotes = showInfo ? collectDedupInfoNotes(matches, section) : [];
 
   for (const { file, match, commandObj, toolIndex } of matches) {
     const resolved = resolveCommand(
@@ -408,42 +433,39 @@ async function runSectionBatched(
   const BATCH_SIZE = 100;
 
   for (const { command, files: onceFiles, toolName } of runOnceGroups.values()) {
-    for (let i = 0; i < onceFiles.length; i += BATCH_SIZE) {
-      const chunk = onceFiles.slice(i, i + BATCH_SIZE);
-      if (chunk.length === 0) continue;
-      checkAborted(ctx.signal);
+    if (onceFiles.length === 0) continue;
+    checkAborted(ctx.signal);
 
-      const result = await execute(command, ctx.signal);
-      const bareName = getBareCommand(command.cmd, command.args);
+    const result = await execute(command, ctx.signal);
+    const bareName = getBareCommand(command.cmd, command.args);
 
-      if (result.error === 'not_found') {
-        lines.push(formatNotFound(toolName, command.cmd));
-        continue;
-      }
+    if (result.error === 'not_found') {
+      lines.push(formatNotFound(toolName, command.cmd));
+      continue;
+    }
 
-      if (result.code === 0) {
-        const relFiles = chunk.map((f) =>
-          normalizeRelativePath(path.relative(command.placeholders.root, f)),
-        );
-        lines.push(formatRunOnceSuccess(bareName, relFiles));
+    if (result.code === 0) {
+      const relFiles = onceFiles.map((f) =>
+        normalizeRelativePath(path.relative(command.placeholders.root, f)),
+      );
+      lines.push(formatRunOnceSuccess(bareName, relFiles));
+    } else {
+      const format = detectOutputFormat(command.args);
+      let toolFindings;
+      if (format === 'json') {
+        toolFindings = parseSemgrepJson(result.stdout);
       } else {
-        const format = detectOutputFormat(command.args);
-        let toolFindings;
-        if (format === 'json') {
-          toolFindings = parseSemgrepJson(result.stdout);
-        } else {
-          toolFindings = parseGenericLines(result.stdout, result.stderr);
-        }
-        for (const f of toolFindings) {
-          f.tool = bareName;
-          f.root = command.placeholders.root;
-          findings.push(f);
-        }
-        const output = commandOutput(result);
-        const findingLines =
-          toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
-        lines.push(formatBatchFailure(bareName, result, findingLines, output));
+        toolFindings = parseGenericLines(result.stdout, result.stderr);
       }
+      for (const f of toolFindings) {
+        f.tool = bareName;
+        f.root = command.placeholders.root;
+        findings.push(f);
+      }
+      const output = commandOutput(result);
+      const findingLines =
+        toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
+      lines.push(formatBatchFailure(bareName, result, findingLines, output, toolName));
     }
   }
 
@@ -487,12 +509,14 @@ async function runSectionBatched(
         const output = commandOutput(result);
         const findingLines =
           toolFindings.length > 0 ? toolFindings.map(formatCompact) : undefined;
-        lines.push(formatBatchFailure(bareName, result, findingLines, output));
+        lines.push(
+          formatBatchFailure(bareName, result, findingLines, output, toolName),
+        );
       }
     }
   }
 
-  return { lines, findings, warnings };
+  return { lines, findings, warnings, infoNotes };
 }
 
 async function runPerFileSection(
@@ -503,6 +527,7 @@ async function runPerFileSection(
   section,
   ig,
   igRoot,
+  showInfo,
 ) {
   const lines = [];
 
@@ -515,8 +540,10 @@ async function runPerFileSection(
     igRoot,
   );
   lines.push(...skippedLines);
+  const infoNotes = showInfo ? collectDedupInfoNotes(matches, section) : [];
 
   for (const { file, match, commandObj } of matches) {
+    checkAborted(ctx.signal);
     try {
       if (section === 'fix-tools') {
         const result = await runFixCommand(ctx, match, file, workspace, commandObj);
@@ -530,7 +557,7 @@ async function runPerFileSection(
     }
   }
 
-  return { lines, warnings };
+  return { lines, warnings, infoNotes };
 }
 
 function buildConfigDeps(ctx) {
@@ -543,7 +570,7 @@ function buildConfigDeps(ctx) {
 /**
  * Run poshify tools for a set of files or a path.
  * @param {any} ctx
- * @param {{ input: { files?: Set<string>, path?: string, paths?: string[] }, sections?: string[], label?: string, cache?: object }} options
+ * @param {{ input: { files?: Set<string>, path?: string, paths?: string[] }, sections?: string[], label?: string, cache?: object, showInfo?: boolean }} options
  * @returns {Promise<{summary: string, findings: any[], warnings: string[]}>}
  */
 export async function runPoshify(ctx, options) {
@@ -617,6 +644,8 @@ export async function runPoshify(ctx, options) {
 
   const sectionLines = new Map();
   const allFindings = [];
+  const allInfoNotes = [];
+  const showInfo = options.showInfo ?? false;
 
   for (const section of sections) {
     checkAborted(ctx.signal);
@@ -627,6 +656,7 @@ export async function runPoshify(ctx, options) {
         lines,
         findings,
         warnings: w,
+        infoNotes,
       } = await runSectionBatched(
         ctx,
         files,
@@ -635,12 +665,18 @@ export async function runPoshify(ctx, options) {
         section,
         ig,
         igRoot,
+        showInfo,
       );
       sectionLines.set(section, lines);
       allFindings.push(...findings);
       warnings.push(...w);
+      allInfoNotes.push(...infoNotes);
     } else {
-      const { lines, warnings: w } = await runPerFileSection(
+      const {
+        lines,
+        warnings: w,
+        infoNotes,
+      } = await runPerFileSection(
         ctx,
         files,
         loaded.items,
@@ -648,9 +684,11 @@ export async function runPoshify(ctx, options) {
         section,
         ig,
         igRoot,
+        showInfo,
       );
       sectionLines.set(section, lines);
       warnings.push(...w);
+      allInfoNotes.push(...infoNotes);
     }
   }
 
@@ -670,13 +708,37 @@ export async function runPoshify(ctx, options) {
     const sectionResult = sectionLines.get(section) || [];
     if (sectionResult.length === 0) continue;
     if (multiSection) {
-      lines.push(`${SECTION_LABELS[section] ?? section}:\n${sectionResult.join('\n')}`);
+      const sectionLabel = SECTION_LABELS[section] ?? section;
+      const labelText = `${sectionLabel}`;
+      const themedLabel = ctx.ui?.theme?.fg
+        ? ctx.ui.theme.fg('toolTitle', `╭${'─'.repeat(labelText.length + 2)}╮`) +
+          '\n' +
+          ctx.ui.theme.fg('toolTitle', `│ ${labelText} │`) +
+          '\n' +
+          ctx.ui.theme.fg('toolTitle', `╰${'─'.repeat(labelText.length + 2)}╯`)
+        : labelText;
+      lines.push(`\n${themedLabel}\n${sectionResult.join('\n')}`);
     } else {
       lines.push(...sectionResult);
     }
   }
 
+  const uniqueInfoNotes = [...new Set(allInfoNotes)];
+  let notes = [];
+  if (uniqueInfoNotes.length > 0) {
+    const infoLabel = 'Info';
+    const labelText = `${infoLabel}`;
+    const themedLabel = ctx.ui?.theme?.fg
+      ? ctx.ui.theme.fg('toolTitle', `╭${'─'.repeat(labelText.length + 2)}╮`) +
+        '\n' +
+        ctx.ui.theme.fg('toolTitle', `│ ${infoLabel} │`) +
+        '\n' +
+        ctx.ui.theme.fg('toolTitle', `╰${'─'.repeat(labelText.length + 2)}╯`)
+      : labelText;
+    notes = [themedLabel, ...uniqueInfoNotes];
+  }
+
   const uniqueWarnings = [...new Set([...pathErrors, ...warnings])];
-  const summary = assembleSummary(header, uniqueWarnings, lines);
+  const summary = assembleSummary(header, uniqueWarnings, lines, notes);
   return { summary, findings: allFindings, warnings: uniqueWarnings };
 }

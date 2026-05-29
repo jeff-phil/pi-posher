@@ -1,7 +1,7 @@
 # pi-posher
 
 <p>
-  <img src="assets/pi-posher.webp" alt="Pi Posher" width="1100">
+  <img src="https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher.webp" alt="Pi Posher" width="1100">
 </p>
 
 > Pi extension that helps agents and builders keep their code prim and proper.
@@ -79,13 +79,13 @@ Global config is considered trusted because it is user-owned agent configuration
       "tools": [
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "format", "{file}"],
+          "args": ["run", "ruff", "format", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 25000
         },
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "check", "{file}"],
+          "args": ["run", "ruff", "check", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -93,7 +93,7 @@ Global config is considered trusted because it is user-owned agent configuration
       "fix-tools": [
         {
           "cmd": "uv",
-          "args": ["run", "ruff", "check", "--fix", "{file}"],
+          "args": ["run", "ruff", "check", "--fix", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 30000
         }
@@ -138,7 +138,7 @@ Global config is considered trusted because it is user-owned agent configuration
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--parser=json", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
@@ -189,13 +189,13 @@ Global config is considered trusted because it is user-owned agent configuration
       "tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "prettier", "--write", "{file}"],
+          "args": ["exec", "--", "prettier", "--write", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         },
         {
           "cmd": "npm",
-          "args": ["exec", "--", "markdownlint", "{file}"],
+          "args": ["exec", "--", "markdownlint", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -203,7 +203,7 @@ Global config is considered trusted because it is user-owned agent configuration
       "fix-tools": [
         {
           "cmd": "npm",
-          "args": ["exec", "--", "markdownlint", "--fix", "{file}"],
+          "args": ["exec", "--", "markdownlint", "--fix", "{files}"],
           "cwd": "{root}",
           "timeoutMs": 15000
         }
@@ -282,6 +282,10 @@ Agent `write` and `edit` operations still run `tools` per-file (not batched for 
 
 If the tool command and parameters are the same across names (e.g. python, typescript, markdown), then all of those files will be batched into the same run as well saving lots of time. Key point, try to keep tools as consistent as possible for long running commands like `semgrep`, but specialized tools such as `svelte-check` can also be run as a specific audit tool for any changed svelte files during the turn.
 
+### Context filtering
+
+Successful poshify output is automatically filtered out of the agent's conversation context to reduce token usage. Only messages containing warnings, errors, or audit findings are retained, so the agent can focus on actionable issues rather than repeated "all good" confirmations.
+
 ### Manually running
 
 You can also trigger poshify manually with the slash command or the `run_poshify` custom tool.
@@ -325,18 +329,18 @@ Path rules:
 
 Placeholders (template tags):
 
-| Placeholder   | Meaning                                                                                   | Example                                |
-| ------------- | ----------------------------------------------------------------------------------------- | -------------------------------------- |
-| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json`                       | `/Users/jeffrey/my-project`            |
-| `{root}`      | Nearest directory containing an `anchor` marker                                           | `/Users/jeffrey/my-project`            |
-| `{file}`      | Absolute path to the file being processed                                                 | `/Users/jeffrey/my-project/src/foo.go` |
-| `{files}`     | All matched file paths (triggers batching; use in `tools`, `fix-tools`, or `audit-tools`) | `src/foo.go src/bar.go`                |
-| `{relFile}`   | `{file}` relative to `{root}`                                                             | `src/foo.go`                           |
-| `{dir}`       | Absolute directory containing the file                                                    | `/Users/jeffrey/my-project/src`        |
-| `{relDir}`    | That directory relative to `{root}`                                                       | `src`                                  |
-| `{config}`    | Resolved command config path (if set)                                                     |                                        |
-| `{configDir}` | Directory containing `{config}`                                                           |                                        |
-| `{name}`      | Poshifier name (useful in `init-setup` paths and args)                                    | `typescript`                           |
+| Placeholder   | Meaning                                                                                   | Example                                                                     |
+| ------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `{workspace}` | Pi working directory, or directory containing `.pi/poshifiers.json`                       | `/Users/jeffrey/my-project`                                                 |
+| `{root}`      | Nearest directory containing an `anchor` marker                                           | `/Users/jeffrey/my-project`                                                 |
+| `{file}`      | Absolute path to the file being processed                                                 | `/Users/jeffrey/my-project/src/foo.go`                                      |
+| `{files}`     | All matched file paths (triggers batching; use in `tools`, `fix-tools`, or `audit-tools`) | `/Users/jeffrey/my-project/src/foo.go /Users/jeffrey/my-project/src/bar.go` |
+| `{relFile}`   | `{file}` relative to `{root}`                                                             | `src/foo.go`                                                                |
+| `{dir}`       | Absolute directory containing the file                                                    | `/Users/jeffrey/my-project/src`                                             |
+| `{relDir}`    | That directory relative to `{root}`                                                       | `src`                                                                       |
+| `{config}`    | Resolved command config path (if set)                                                     |                                                                             |
+| `{configDir}` | Directory containing `{config}`                                                           |                                                                             |
+| `{name}`      | Poshifier name (useful in `init-setup` paths and args)                                    | `typescript`                                                                |
 
 `{root}` is found by walking up from `{file}` looking for `anchors`. `{workspace}` is where Pi is running. They are usually the same, but in a monorepo where a file is in `packages/bar/` and the anchor (`package.json`) is there, `{root}` = `packages/bar/` while `{workspace}` = the repo root.
 
@@ -345,19 +349,19 @@ Placeholders (template tags):
 While running:
 
 <p>
-  <img src="assets/pi-posher-ss-run.webp" alt="Pi Posher running" width="220">
+  <img src="https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher-ss-run.webp" alt="Pi Posher running" width="220">
 </p>
 
 Successful run with details:
 
 <p>
-  <img src="assets/pi-posher-ss-success.webp" alt="Pi Posher success" width="1100">
+  <img src="https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher-ss-success.webp" alt="Pi Posher success" width="1100">
 </p>
 
 Failed run for full `audit` and details:
 
 <p>
-  <img src="assets/pi-posher-ss-err.webp" alt="Pi Posher error" width="1100">
+  <img src="https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher-ss-err.webp" alt="Pi Posher error" width="1100">
 </p>
 
 ## Disable a poshifier

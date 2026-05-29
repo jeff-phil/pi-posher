@@ -108,4 +108,14 @@ describe('reporter', () => {
     assert.ok(summary.includes('warn1'));
     assert.ok(summary.includes('line1'));
   });
+
+  it('assembleSummary appends notes at the bottom', () => {
+    const summary = assembleSummary('Header', [], ['line1'], ['ℹ️ note1']);
+    assert.ok(summary.startsWith('Header:'));
+    assert.ok(summary.includes('line1'));
+    assert.ok(summary.includes('ℹ️ note1'));
+    const noteIndex = summary.indexOf('ℹ️ note1');
+    const lineIndex = summary.indexOf('line1');
+    assert.ok(noteIndex > lineIndex, 'notes should appear after lines');
+  });
 });

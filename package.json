@@ -1,7 +1,7 @@
 {
   "name": "pi-posher",
-  "version": "0.2.0",
-  "description": "Helps clankers keep code prim and proper",
+  "version": "0.2.2",
+  "description": "Helps clankers keep code prim and proper with linters, formatters and security tools",
   "type": "module",
   "license": "MIT",
   "author": "jeffphil",
@@ -31,7 +31,7 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "files": ["assets", "CONTRIBUTING.md", "LICENSE", "README.md", "src"],
+  "files": ["CONTRIBUTING.md", "LICENSE", "README.md", "src"],
   "pi": {
     "extensions": ["src/index.ts"],
     "image": "https://raw.githubusercontent.com/jeff-phil/pi-posher/refs/heads/main/assets/pi-posher.webp"
@@ -43,7 +43,7 @@
     "prepublishOnly": "npm test && npm run lint && npx tsc --noEmit"
   },
   "dependencies": {
-    "ignore": "^5.3.0"
+    "ignore": "^7.0.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

@@ -163,9 +163,10 @@ export function formatRunOnceSuccess(bareName, relFiles) {
   return `✅ ${bareName} succeeded (triggered by ${count} file${count !== 1 ? 's' : ''}: ${namesStr})`;
 }
 
-export function formatBatchFailure(bareName, result, findingLines, output) {
+export function formatBatchFailure(bareName, result, findingLines, output, toolName) {
   const suffix = result.killed ? ' (killed/timeout)' : '';
-  const base = `⚠️ ${bareName} failed with exit code ${result.code}${suffix}`;
+  const prefix = toolName ? `${toolName}: ${bareName}` : bareName;
+  const base = `⚠️ ${prefix} failed with exit code ${result.code}${suffix}`;
   if (findingLines && findingLines.length > 0) {
     return `${base}:\n${findingLines.join('\n')}`;
   }
@@ -177,13 +178,16 @@ export function formatError(toolName, error) {
   return `⚠️ ${toolName}: ${error.message}`;
 }
 
-export function assembleSummary(header, warnings, lines) {
+export function assembleSummary(header, warnings, lines, notes) {
   const parts = [];
   if (warnings.length > 0) {
     parts.push(warnings.map((w) => (w.startsWith('ℹ️') ? w : `⚠️ ${w}`)).join('\n'));
   }
   if (lines.length > 0) {
     parts.push(lines.join('\n'));
+  }
+  if (notes && notes.length > 0) {
+    parts.push(notes.join('\n'));
   }
   if (parts.length === 0) return `${header}:`;
   return `${header}:\n${parts.join('\n\n')}`;

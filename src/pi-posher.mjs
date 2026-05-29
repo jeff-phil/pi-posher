@@ -1,7 +1,13 @@
 import path from 'node:path';
 
 import { keyHint } from '@earendil-works/pi-coding-agent';
-import { Box, Spacer, Text } from '@earendil-works/pi-tui';
+import {
+  Box,
+  Spacer,
+  Text,
+  truncateToWidth,
+  visibleWidth,
+} from '@earendil-works/pi-tui';
 
 import { loadPoshifyConfig, readBundledDefaultsLayer } from './config-loader.mjs';
 import {
@@ -9,7 +15,7 @@ import {
   seedAllInitConfigs,
   seedPoshifyDefaults,
 } from './init-seeder.mjs';
-import { formatConfigHeader, hasIssueOutput } from './lib/output.mjs';
+import { colorizeLine, formatConfigHeader, hasIssueOutput } from './lib/output.mjs';
 import { normalizeUnicodeSpaces, resolveAtPath, toAbsolutePath } from './lib/paths.mjs';
 import { validateBatchCommand } from './lib/template.mjs';
 import { formatCompact, hashFinding } from './parser.mjs';
@@ -18,6 +24,105 @@ import { execute } from './runner.mjs';
 import { askProjectConfigTrust, getExtensionDataDir } from './trust.mjs';
 
 const COLLAPSED_LINE_LIMIT = 20;
+
+class TruncatedLinesText {
+  constructor(
+    theme,
+    text,
+    hasIssues,
+    countHint,
+    widthHint,
+    paddingX = 0,
+    paddingY = 0,
+  ) {
+    this._theme = theme;
+    this.hasIssues = hasIssues;
+    this._coloredLines = (text || '')
+      .split('\n')
+      .map((line) => colorizeLine(theme, line));
+    this._countHint = countHint;
+    this._widthHint = widthHint;
+    this._padX = paddingX;
+    this._padY = paddingY;
+    this._cache = { width: undefined, lines: undefined };
+  }
+
+  invalidate() {
+    this._cache = { width: undefined, lines: undefined };
+  }
+
+  render(width) {
+    if (this._cache.lines && this._cache.width === width) {
+      return this._cache.lines;
+    }
+
+    if (!this._coloredLines || this._coloredLines.length === 0) {
+      this._cache = { width, lines: [] };
+      return [];
+    }
+
+    const contentW = Math.max(1, width + 1 - this._padX * 2);
+    const limit = Math.max(0, contentW); // TUI width margin
+    const lines = [];
+    const emptyLine = ' '.repeat(width);
+
+    // Top padding
+    for (let i = 0; i < this._padY; i++) {
+      lines.push(emptyLine);
+    }
+
+    const bgKey = this.hasIssues ? 'toolErrorBg' : 'toolSuccessBg';
+
+    const left = ' '.repeat(this._padX);
+    const right = ' '.repeat(this._padX);
+    const suffix = this._theme.bg(
+      bgKey,
+      this._theme.fg('userMessageText', '···▶ [more]     '),
+    );
+    const suffixWidth = visibleWidth(suffix);
+    let truncatedAny = false;
+
+    for (const coloredLine of this._coloredLines) {
+      if (visibleWidth(coloredLine) > limit) {
+        truncatedAny = true;
+        const truncated = truncateToWidth(
+          coloredLine,
+          Math.max(1, limit - suffixWidth),
+          '',
+        );
+        const line = left + truncated + suffix + right;
+        const pad = Math.max(0, width - visibleWidth(line));
+        lines.push(line + ' '.repeat(pad));
+      } else {
+        const line = left + coloredLine + right;
+        const pad = Math.max(0, width - visibleWidth(line));
+        lines.push(line + ' '.repeat(pad));
+      }
+    }
+
+    if (this._countHint) {
+      lines.push(emptyLine);
+      const line = left + this._countHint + right;
+      const pad = Math.max(0, width - visibleWidth(line));
+      lines.push(line + ' '.repeat(pad));
+    }
+
+    if (truncatedAny && this._widthHint) {
+      lines.push(emptyLine);
+      const line = left + this._widthHint + right;
+      const pad = Math.max(0, width - visibleWidth(line));
+      lines.push(line + ' '.repeat(pad));
+    }
+
+    // Bottom padding
+    for (let i = 0; i < this._padY; i++) {
+      lines.push(emptyLine);
+    }
+
+    this._cache = { width, lines };
+    return lines.length > 0 ? lines : [''];
+  }
+}
 
 function customMessageText(content, details) {
   const summary = details?.summary;
@@ -34,26 +139,45 @@ function registerDiagnosticsRenderer(pi) {
   pi.registerMessageRenderer('pi-posher', (message, options, theme) => {
     const text = customMessageText(message.content, message.details);
     const { expanded } = options;
-    let displayText = text;
+    let bodyText = text;
+    let countHint = null;
 
     const hasIssues = hasIssueOutput(text);
     if (!expanded && typeof text === 'string') {
       const lines = text.split('\n');
       if (lines.length > COLLAPSED_LINE_LIMIT) {
         const shown = lines.slice(0, COLLAPSED_LINE_LIMIT);
+        bodyText = shown.join('\n');
         const hidden = lines.length - COLLAPSED_LINE_LIMIT;
-        displayText =
-          `${shown.join('\n')}\n` +
-          `${theme.fg('muted', `... (${hidden} more lines,`)} ${keyHint('app.tools.expand', 'to expand')})`;
+        countHint = `${theme.fg('muted', `···▶ (${hidden} more lines,`)} ${keyHint('app.tools.expand', 'to expand')})`;
       }
     }
 
     const bgKey = hasIssues ? 'toolErrorBg' : 'toolSuccessBg';
     const box = new Box(1, 1, (value) => theme.bg(bgKey, value));
     box.addChild(new Text(theme.fg('toolTitle', theme.bold('poshify')), 0, 0));
-    if (displayText.trim()) {
+    if (bodyText.trim()) {
       box.addChild(new Spacer(1));
-      box.addChild(new Text(theme.fg('toolOutput', displayText), 0, 0));
+      if (expanded) {
+        const coloredBody = bodyText
+          .split('\n')
+          .map((line) => colorizeLine(theme, line))
+          .join('\n');
+        box.addChild(new Text(coloredBody, 0, 0));
+      } else {
+        const widthHint = `${theme.fg('muted', '···▶ (some lines are truncated,')} ${keyHint('app.tools.expand', 'to expand')})`;
+        box.addChild(
+          new TruncatedLinesText(
+            theme,
+            bodyText,
+            hasIssues,
+            countHint,
+            widthHint,
+            0,
+            0,
+          ),
+        );
+      }
     }
     return box;
   });
@@ -66,7 +190,7 @@ function startPoshifySpinner(ctx, label, target) {
   const animationId = setInterval(() => {
     const frame = frames[frameIndex];
     ctx.ui.setWidget('poshify-loader', [
-      ctx.ui.theme.fg('accent', '┏━━ Pi Poshify Tool ━━━━━━━━━━━━━━━━━━━━━'),
+      ctx.ui.theme.fg('accent', '┏━━ Pi Posher ━━━━━━━━━━━━━━━━━━━━━'),
       `${ctx.ui.theme.fg('muted', '┃')} ${label}`,
       `${ctx.ui.theme.fg('muted', '┃')} Target: ${ctx.ui.theme.fg('dim', target === '.' ? '{current dir}' : target)}`,
       ctx.ui.theme.fg('accent', `┗━━ ${frame} Working...`),
@@ -297,7 +421,7 @@ export default async function piPosherExtension(pi) {
         if (fixTargets.length === 0) fixTargets.push('.');
         const fixSpinner = startPoshifySpinner(
           ctx,
-          'Running fix...',
+          'Running poshify fix...',
           formatSpinnerTargets(fixTargets),
         );
         let summary;
@@ -336,7 +460,7 @@ export default async function piPosherExtension(pi) {
         if (auditTargets.length === 0) auditTargets.push('.');
         const auditSpinner = startPoshifySpinner(
           ctx,
-          'Running tools + audit...',
+          'Running poshify tools + audit...',
           formatSpinnerTargets(auditTargets),
         );
         let summary;
@@ -346,6 +470,7 @@ export default async function piPosherExtension(pi) {
             sections: ['tools', 'audit-tools'],
             label: '--audit',
             cache: configCache,
+            showInfo: true,
           });
           summary = result.summary;
         } catch (error) {
@@ -363,7 +488,11 @@ export default async function piPosherExtension(pi) {
           : '';
         const commandText = `/poshify --audit ${auditTargets.join(' ')}`;
         const displaySummary = hasIssues
-          ? `💡 Issues found running: "${commandText}"  Let me know if you want me to fix them.\n\n${summary}`
+          ? (ctx.ui?.theme?.fg?.(
+              'error',
+              `💡 Issues found running: "${commandText}"\n\n`,
+            ) ?? `💡 Issues found running: "${commandText}"\n\n`) +
+            (ctx.ui?.theme?.fg?.('toolOutput', `${summary}`) ?? summary)
           : summary;
         pi.sendMessage(
           {
@@ -397,7 +526,7 @@ export default async function piPosherExtension(pi) {
 
       const animationId = startPoshifySpinner(
         ctx,
-        'Running tools...',
+        'Running poshify tools...',
         formatSpinnerTargets(plainTargets),
       );
 
@@ -406,6 +535,7 @@ export default async function piPosherExtension(pi) {
         const result = await runPoshify(ctx, {
           input: { paths: plainTargets },
           cache: configCache,
+          showInfo: true,
         });
         summary = result.summary;
       } catch (error) {
