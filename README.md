@@ -24,7 +24,7 @@ pi install npm:pi-posher
 
 ## Defaults and prerequisites
 
-On first use, `pi-posher` seeds a global config (`~/.pi/agent/extensions/pi-posher/poshifiers.json`) with default poshifiers for go, python, typescript, javascript, svelte, json, yaml, and markdown. These defaults are a starting point — you should edit or remove any entry to match the tools you actually use.
+On first use, `pi-posher` seeds a global config (`~/.pi/agent/extensions/pi-posher/poshifiers.json`) with default poshifiers for many languages and formats such as go, python, typescript, javascript, svelte, json, yaml, and markdown. These defaults are a starting point — you should edit or remove any entry to match the set of tools and technology you actually use.
 
 > **Note:** The default `audit-tools` and most Python tooling rely on [`uv`](https://docs.astral.sh/uv/) to run commands. For the best out-of-box experience, install `uv` so that `semgrep` and `ruff` commands work without modification. If you prefer `pip`, `npm`, `pnpm`, or other runners, update the `cmd` and `args` in the config to suit your environment.
 
@@ -33,6 +33,33 @@ On first use, `pi-posher` seeds a global config (`~/.pi/agent/extensions/pi-posh
 `pi-posher` automatically respects `.gitignore` and `.ignore` files in the project root (`{workspace}`) when scanning directories or matching files. Any paths listed in those files are skipped entirely — no tools are run against them, and they are pruned during recursive directory walks.
 
 This means you don't need to duplicate `.gitignore` entries in every poshifier's `exclude` array. Only add `exclude` patterns for files that _are_ tracked but should still be skipped by a specific tool (e.g. `vendor/` for Go, but not `node_modules/` which is already in `.gitignore`).
+
+Each poshifier has an optional `init-setup` block with:
+
+- `init-configs`: Array of bundled config files, directories, or glob patterns to copy into the project root (`{root}`). Supports `{name}` placeholder for per-language variants.
+  - Paths without `{name}/` are copied to `{root}` directly (e.g., `.prettierrc`).
+  - Paths with `{name}/` strip the `{name}` prefix and preserve any remaining subdirectories (e.g., `{name}/foo/bar.json` → `{root}/foo/bar.json`).
+  - Directory entries (e.g., `{name}/foo/`, `{name}/foo/**`) are copied recursively. Existing files in the destination are skipped; new files from the source are merged in.
+  - Glob patterns are supported in the final path segment (e.g., `{name}/configs/*.json`, `{name}/rules/*.{json,yaml}`). The glob matches files in the directory part. Any matched file is copied with its parent subdirectory preserved.
+  - Files already in the destination are skipped without error.
+  - Empty glob matches silently skip.
+- `init-tools`: Commands to run during init (e.g., `npm install --save-dev ...`).
+- `fix-tools`: Commands to run for `/poshify --fix` (same schema as `tools`).
+- `audit-tools`: Commands to run for `/poshify --audit` and at `turn_end` after agent edits (same schema as `tools`).
+- `maxFileSizeBytes`: Optional limit in bytes; files larger than this are silently skipped (default 2 MB).
+
+> **Note on `anchors`:** If `anchors` is omitted or empty, it defaults to `['.project']`. This means a poshifier without explicit anchors will only match files inside a directory tree that contains a `.project` marker file.
+
+Every tool object (in `tools`, `fix-tools`, `audit-tools`, or `init-tools`) supports these fields:
+
+| Field       | Type     | Description                                                           |
+| ----------- | -------- | --------------------------------------------------------------------- |
+| `cmd`       | string   | Command to run                                                        |
+| `args`      | string[] | Arguments passed to the command                                       |
+| `cwd`       | string   | Working directory (supports placeholders)                             |
+| `timeoutMs` | number   | Timeout in milliseconds (default 15000)                               |
+| `config`    | string   | Path to a config file; sets `{config}` and `{configDir}` placeholders |
+| `env`       | object   | Key/value map merged into the command's environment                   |
 
 Global config, trusted automatically:
 
@@ -50,25 +77,14 @@ Project local configs can be placed in the project level `.pi` directory:
 
 Project entries override global entries with the same `name` (go, typescript, python, etc.), and entries must be explicitly trusted by the user before running.
 
-## Trust and security
-
-Project local configs, especially from unknown repositories, could run arbitrary commands on your machine that are evil in nature.
-
-Here are the guardrails to prevent malicious configs and scripts:
-
-- Project local config content is uniquely hashed
-- Unknown hashes prompt for `Trust once`, `Trust always`, or `Reject`
-- The prompt shows every configured tool command in the project local config file
-- The options `Trust once` and `Reject` are session specific, and won't prompt again during the current session while the config remains unchanged.
-- `Trust always` stores the hash in `~/.pi/agent/extensions/pi-posher/trust/poshify.json`
-- Changing the project local config changes the hash and asks again to trust or reject
-- Non-interactive mode rejects project local config by default
-- Commands run as `cmd` & `args[]`, so each can be validated against shell injection
-
-Global config is considered trusted because it is user-owned agent configuration.
-
+### <u>Example config</u>
 <details>
-<summary>## Example config (expand)</summary
+  
+<summary>
+  ${\color{#5991F1}[\,click\,to\,expand\,]}$
+</summary>
+
+Configuration examples for named `python`, `json`, and `markdown` ***poshifiers***
 
 ```json
 {
@@ -233,44 +249,40 @@ Global config is considered trusted because it is user-owned agent configuration
   ]
 }
 ```
+
 </details>
 
-Each poshifier has an optional `init-setup` block with:
 
-- `init-configs`: Array of bundled config files, directories, or glob patterns to copy into the project root (`{root}`). Supports `{name}` placeholder for per-language variants.
-  - Paths without `{name}/` are copied to `{root}` directly (e.g., `.prettierrc`).
-  - Paths with `{name}/` strip the `{name}` prefix and preserve any remaining subdirectories (e.g., `{name}/foo/bar.json` → `{root}/foo/bar.json`).
-  - Directory entries (e.g., `{name}/foo/`, `{name}/foo/**`) are copied recursively. Existing files in the destination are skipped; new files from the source are merged in.
-  - Glob patterns are supported in the final path segment (e.g., `{name}/configs/*.json`, `{name}/rules/*.{json,yaml}`). The glob matches files in the directory part. Any matched file is copied with its parent subdirectory preserved.
-  - Files already in the destination are skipped without error.
-  - Empty glob matches silently skip.
-- `init-tools`: Commands to run during init (e.g., `npm install --save-dev ...`).
-- `fix-tools`: Commands to run for `/poshify --fix` (same schema as `tools`).
-- `audit-tools`: Commands to run for `/poshify --audit` and at `turn_end` after agent edits (same schema as `tools`).
-- `maxFileSizeBytes`: Optional limit in bytes; files larger than this are silently skipped (default 2 MB).
+## Trust and security
 
-> **Note on `anchors`:** If `anchors` is omitted or empty, it defaults to `['.project']`. This means a poshifier without explicit anchors will only match files inside a directory tree that contains a `.project` marker file.
+Project local configs (e.g. `~/projects/my-project/.pi/poshifiers.json`), especially from unknown repositories, could run arbitrary commands on your machine that are evil in nature.
 
-Every tool object (in `tools`, `fix-tools`, `audit-tools`, or `init-tools`) supports these fields:
+Here are the guardrails to prevent malicious configs and scripts:
 
-| Field       | Type     | Description                                                           |
-| ----------- | -------- | --------------------------------------------------------------------- |
-| `cmd`       | string   | Command to run                                                        |
-| `args`      | string[] | Arguments passed to the command                                       |
-| `cwd`       | string   | Working directory (supports placeholders)                             |
-| `timeoutMs` | number   | Timeout in milliseconds (default 15000)                               |
-| `config`    | string   | Path to a config file; sets `{config}` and `{configDir}` placeholders |
-| `env`       | object   | Key/value map merged into the command's environment                   |
+- Project local config content is uniquely hashed
+- Unknown hashes prompt for `Trust once`, `Trust always`, or `Reject`
+- The prompt shows every configured tool command in the project local config file
+- The options `Trust once` and `Reject` are session specific, and won't prompt again during the current session while the config remains unchanged.
+- `Trust always` stores the hash in `~/.pi/agent/extensions/pi-posher/trust/poshify.json`
+- Changing the project local config changes the hash and asks again to trust or reject
+- Non-interactive mode rejects project local config by default
+- Commands run as `cmd` & `args[]`, so each can be validated against shell injection
+
+Global config (`~/.pi/agent/extensions/pi-posher/poshifiers.json`) is considered trusted because it is user-owned agent configuration.
 
 ## Behavior
 
-After the agent successfully does a `write` or `edit` operation:
+After the agent successfully does a `write` or `edit` operation on a file:
 
-1. Extension looks for poshifiers matching `include` / `exclude` file and directory glob patterns
-2. Extension uses `anchors` to find the `{root}`
+1. Pi Posher looks for poshifiers matching `include` / `exclude` file and directory glob patterns
+2. Extension uses `anchors` to find the `{root}` of the current project
 3. Skips files above `maxFileSizeBytes`
-4. Runs each command in the `tools` array sequentially, in order.
-5. Sends a compact summary as a steer message, or error details if the tool fails.
+4. Runs each command in the `tools` array sequentially, in order on the file.
+5. Sends a compact summary for the tool, or error details if the tool fails that is also a `steer` message for the clanker to correct.
+6. Tracks the file in a list of files that were written or edited during the turn.
+7. At the end of the turn, the list of tracked files will have the `audit-tools` batch run on them together.  This will be more efficient for deeper level, longer taking audit tools such as `semgrep` because the files and tools are batched.
+
+> **Note:** if files are modified by the clanker with `bash` commands, then the files are ***not*** tracked.  For this, it would be a good idea to run the one of the `/poshify ...` slash commands manually to look for issues.  Or you can ask `Run poshify on .` or `Run poshify on @src/` from the prompt.
 
 When a slash command (`/poshify`, `/poshify --fix`, `/poshify --audit`) is used, or when `audit-tools` run at `turn_end`, all matched files are collected and grouped by their resolved command configuration. Commands that contain a `{files}` placeholder are batched — all matching files sharing the exact same resolved command are passed together in one invocation by replacing `{files}` with the collected paths. This works for `tools`, `fix-tools`, and `audit-tools`.
 
@@ -280,7 +292,7 @@ At `turn_end`, audit findings are deduplicated across turns (same finding is rep
 
 Agent `write` and `edit` operations still run `tools` per-file (not batched for the turn), so you get immediate feedback after each edit.
 
-**Note:** Since there could be several `write` and `edit` operations to files during an agent "turn" (which is the agent processing, thinking, working, and responding to a user prompt), you would not want long running tool commands (2+ secs) for each write and edit. That is the main reason in the default configuration, `semgrep` runs in batch at the end of the turn because it could take 5+ seconds even for a basic source file. The disadvantage of audit-tools being run at `turn_end` is you have to reprompt to fix the issues, since it completes after a turn has ended. But the advantage is any files that were written or edited can be batched all together at the end instead of each sequentially.
+> **Note:** Since there could be several `write` and `edit` operations to files during an agent "turn" (which is the agent processing, thinking, working, and responding to a user prompt), you would not want long running tool commands (2+ secs) for each write and edit. That is the main reason in the default configuration, `semgrep` runs in batch at the end of the turn because it could take 5+ seconds even for a basic source file. The disadvantage of audit-tools being run at `turn_end` is you have to reprompt to fix the issues, since it completes after a turn has ended. But the advantage is any files that were written or edited can be batched all together at the end instead of each sequentially.
 
 If the tool command and parameters are the same across names (e.g. python, typescript, markdown), then all of those files will be batched into the same run as well saving lots of time. Key point, try to keep tools as consistent as possible for long running commands like `semgrep`, but specialized tools such as `svelte-check` can also be run as a specific audit tool for any changed svelte files during the turn.
 
@@ -319,6 +331,8 @@ You can also trigger poshify manually with the slash command or the `run_poshify
 Callable by the LLM with a `path` argument. The model can invoke it when asked to "run poshify on X".
 
 Both the slash command and the tool scan matching files recursively, run configured tools, and report results in the same output format as the automatic trigger.
+
+> **Note:** `run_poshify` or "run poshify on X" prompt only runs the standard `tools` and not `audit_tools`. To manually run the `audit_tools` use the `/poshfiy --audit (file|dir)` slash command.
 
 ## Relative paths and placeholders
 
