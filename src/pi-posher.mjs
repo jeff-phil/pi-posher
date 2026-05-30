@@ -47,10 +47,6 @@ class TruncatedLinesText {
     this._cache = { width: undefined, lines: undefined };
   }
 
-  invalidate() {
-    this._cache = { width: undefined, lines: undefined };
-  }
-
   render(width) {
     if (this._cache.lines && this._cache.width === width) {
       return this._cache.lines;
@@ -247,7 +243,8 @@ export default async function piPosherExtension(pi) {
 
   // Quick poshify shortcut: ?posh <path> runs poshify without invoking the LLM
   pi.on('input', async (event, ctx) => {
-    if (!event.text?.startsWith('?posh ')) {
+    const text = event.text?.trim();
+    if (text !== '?posh' && !text?.startsWith('?posh ')) {
       return { action: 'continue' };
     }
 
@@ -257,7 +254,7 @@ export default async function piPosherExtension(pi) {
       return { action: 'continue' };
     }
 
-    const target = event.text.slice(6).trim();
+    const target = text?.slice(6).trim();
     if (!target) {
       ctx.ui?.notify('Usage: ?posh <file|dir>', 'warning');
       return { action: 'handled' };
@@ -618,7 +615,7 @@ export default async function piPosherExtension(pi) {
     const tb = await import('typebox');
     Type = tb.Type;
   } catch {
-    // typebox not available — skip tool registration
+    // typebox not available — run_poshify tool registration will be skipped!
   }
 
   if (Type) {
@@ -638,6 +635,10 @@ export default async function piPosherExtension(pi) {
           input: { path: resolveAtPath(params.path, ctx.cwd) },
           cache: configCache,
         });
+        if (hasIssueOutput(summary)) {
+          // this is the pi-coding-agent documented way to set error from a registered tool
+          throw new Error(summary);
+        }
         return {
           content: [{ type: 'text', text: summary || 'No changes or issues found.' }],
           details: {},

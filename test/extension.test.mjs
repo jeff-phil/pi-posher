@@ -1,3 +1,13 @@
+/**
+ * NOTE: @earendil-works/pi-coding-agent and @earendil-works/pi-tui are
+ * peerDependencies. If they are not present in node_modules, link them
+ * from the global npm installation:
+ *
+ *   ln -s $PI_CODING_AGENT_DIR/npm/lib/node_modules/@earendil-works/pi-coding-agent \
+ *         node_modules/@earendil-works/pi-coding-agent
+ *   ln -s $PI_CODING_AGENT_DIR/npm/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui \
+ *         node_modules/@earendil-works/pi-tui
+ */
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
@@ -232,10 +242,14 @@ describe('extension streaming-aware behavior', () => {
     // instead we fire it and check the notification, then let it finish.
     const handlerPromise = command.handler('--audit .', ctx);
 
-    // Yield to let the async handler reach the notification
-    await new Promise((res) => setTimeout(res, 50));
+    // Poll deterministically for the async notification instead of a fixed sleep.
+    let notify;
+    for (let i = 0; i < 20; i += 1) {
+      notify = ctx.getNotifications().find((n) => n.text.includes('Agent is busy'));
+      if (notify) break;
+      await new Promise((res) => setTimeout(res, 10));
+    }
 
-    const notify = ctx.getNotifications().find((n) => n.text.includes('Agent is busy'));
     assert.ok(notify, 'should notify that agent is busy');
     assert.strictEqual(notify.level, 'info');
 
