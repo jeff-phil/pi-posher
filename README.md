@@ -67,7 +67,8 @@ Here are the guardrails to prevent malicious configs and scripts:
 
 Global config is considered trusted because it is user-owned agent configuration.
 
-## Example config
+<details>
+<summary>## Example config (expand)</summary
 
 ```json
 {
@@ -232,6 +233,7 @@ Global config is considered trusted because it is user-owned agent configuration
   ]
 }
 ```
+</details>
 
 Each poshifier has an optional `init-setup` block with:
 
