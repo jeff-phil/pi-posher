@@ -170,61 +170,6 @@ describe('extension streaming-aware behavior', () => {
     assert.strictEqual(ctx.getStatuses().length, 0);
   });
 
-  it('input handler defers ?posh during steering', async () => {
-    const pi = createMockPi();
-    await piPosherExtension(pi);
-
-    const handlers = pi.getHandlers();
-    const inputHandler = handlers.input?.[0];
-    assert.ok(inputHandler, 'input handler should exist');
-
-    const ctx = createMockCtx({ hasUI: true });
-    const result = await inputHandler(
-      { text: '?posh src/', streamingBehavior: 'steer' },
-      ctx,
-    );
-
-    assert.deepStrictEqual(result, { action: 'continue' });
-    assert.strictEqual(ctx.getNotifications().length, 1);
-    assert.strictEqual(ctx.getNotifications()[0].text, '?posh deferred until idle');
-    assert.strictEqual(ctx.getNotifications()[0].level, 'info');
-  });
-
-  it('input handler warns on empty ?posh target', async () => {
-    const pi = createMockPi();
-    await piPosherExtension(pi);
-
-    const inputHandler = pi.getHandlers().input?.[0];
-    assert.ok(inputHandler);
-
-    const ctx = createMockCtx({ hasUI: true });
-    const result = await inputHandler({ text: '?posh  ' }, ctx);
-
-    assert.deepStrictEqual(result, { action: 'handled' });
-    assert.strictEqual(ctx.getNotifications().length, 1);
-    assert.strictEqual(ctx.getNotifications()[0].text, 'Usage: ?posh <file|dir>');
-    assert.strictEqual(ctx.getNotifications()[0].level, 'warning');
-  });
-
-  it('input handler runs poshify for ?posh when idle', async () => {
-    const pi = createMockPi();
-    await piPosherExtension(pi);
-
-    const inputHandler = pi.getHandlers().input?.[0];
-    assert.ok(inputHandler);
-
-    const ctx = createMockCtx({ cwd: '/tmp/test-idle' });
-    const result = await inputHandler({ text: '?posh nonexistent-path-12345' }, ctx);
-
-    assert.deepStrictEqual(result, { action: 'handled' });
-    assert.strictEqual(pi.getMessages().length, 1);
-    assert.strictEqual(pi.getMessages()[0].opts.deliverAs, 'steer');
-    assert.ok(
-      pi.getMessages()[0].msg.content.includes('Path not found') ||
-        pi.getMessages()[0].msg.details.summary.includes('Path not found'),
-    );
-  });
-
   it('/poshify --audit notifies when agent is busy', async () => {
     const pi = createMockPi();
     await piPosherExtension(pi);

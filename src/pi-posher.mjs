@@ -241,50 +241,6 @@ export default async function piPosherExtension(pi) {
     }
   });
 
-  // Quick poshify shortcut: ?posh <path> runs poshify without invoking the LLM
-  pi.on('input', async (event, ctx) => {
-    const text = event.text?.trim();
-    if (text !== '?posh' && !text?.startsWith('?posh ')) {
-      return { action: 'continue' };
-    }
-
-    // During steering, skip the exec call — corrections should be fast
-    if (event.streamingBehavior === 'steer') {
-      ctx.ui?.notify('?posh deferred until idle', 'info');
-      return { action: 'continue' };
-    }
-
-    const target = text?.slice(6).trim();
-    if (!target) {
-      ctx.ui?.notify('Usage: ?posh <file|dir>', 'warning');
-      return { action: 'handled' };
-    }
-
-    let summary;
-    try {
-      const result = await runPoshify(ctx, {
-        input: { paths: [target] },
-        cache: configCache,
-        showInfo: true,
-      });
-      summary = result.summary;
-    } catch (error) {
-      summary = `  Poshify error: ${error.message}`;
-    }
-
-    pi.sendMessage(
-      {
-        customType: 'pi-posher',
-        content: summary,
-        display: true,
-        details: { path: target, summary },
-      },
-      { deliverAs: 'steer' },
-    );
-
-    return { action: 'handled' };
-  });
-
   pi.registerCommand('poshify', {
     description:
       'Run configured tools on a file or directory (/poshify --help for more)',

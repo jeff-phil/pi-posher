@@ -1,6 +1,6 @@
 {
   "name": "pi-posher",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Helps clankers keep code prim and proper with linters, formatters and security tools",
   "type": "module",
   "license": "MIT",
