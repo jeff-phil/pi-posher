@@ -47,10 +47,6 @@ class TruncatedLinesText {
     this._cache = { width: undefined, lines: undefined };
   }
 
-  invalidate() {
-    this._cache = { width: undefined, lines: undefined };
-  }
-
   render(width) {
     if (this._cache.lines && this._cache.width === width) {
       return this._cache.lines;
@@ -458,6 +454,14 @@ export default async function piPosherExtension(pi) {
         const auditIdx = tokens.findIndex((t) => t === '--audit' || t === '-audit');
         const auditTargets = targetsAfter(auditIdx);
         if (auditTargets.length === 0) auditTargets.push('.');
+
+        if (ctx.isIdle && !ctx.isIdle()) {
+          ctx.ui?.notify(
+            'Agent is busy; audit will queue after the current turn.',
+            'info',
+          );
+        }
+
         const auditSpinner = startPoshifySpinner(
           ctx,
           'Running poshify tools + audit...',
@@ -567,7 +571,7 @@ export default async function piPosherExtension(pi) {
     const tb = await import('typebox');
     Type = tb.Type;
   } catch {
-    // typebox not available — skip tool registration
+    // typebox not available — run_poshify tool registration will be skipped!
   }
 
   if (Type) {
@@ -587,6 +591,10 @@ export default async function piPosherExtension(pi) {
           input: { path: resolveAtPath(params.path, ctx.cwd) },
           cache: configCache,
         });
+        if (hasIssueOutput(summary)) {
+          // this is the pi-coding-agent documented way to set error from a registered tool
+          throw new Error(summary);
+        }
         return {
           content: [{ type: 'text', text: summary || 'No changes or issues found.' }],
           details: {},
@@ -598,6 +606,11 @@ export default async function piPosherExtension(pi) {
   pi.on('tool_result', async (event, ctx) => {
     if (event.toolName !== 'write' && event.toolName !== 'edit') return undefined;
     if (event.isError) return undefined;
+
+    // Skip per-file formatting when user already queued a steer or follow-up
+    if (ctx.hasPendingMessages && ctx.hasPendingMessages()) {
+      return undefined;
+    }
 
     const inputPath = getEventPath(event.input);
     if (!inputPath) return undefined;
@@ -641,6 +654,12 @@ export default async function piPosherExtension(pi) {
 
   pi.on('turn_end', async (_event, ctx) => {
     if (turnEndAuditFiles.size === 0) return undefined;
+
+    // Defer expensive audit-tools when user has queued steers or follow-ups.
+    // This keeps the agent responsive instead of blocking on long scans.
+    if (ctx.hasPendingMessages && ctx.hasPendingMessages()) {
+      return undefined;
+    }
 
     const files = new Set(turnEndAuditFiles);
     turnEndAuditFiles.clear();

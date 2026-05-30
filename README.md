@@ -59,8 +59,8 @@ Here are the guardrails to prevent malicious configs and scripts:
 - Project local config content is uniquely hashed
 - Unknown hashes prompt for `Trust once`, `Trust always`, or `Reject`
 - The prompt shows every configured tool command in the project local config file
-- The options `Trust once` and `Reject` are session specific, and won't prompt again until Pi is reloaded or restarted, or hash changes.
-- `Trust always` stores the hash in `~/.pi/agent/extensions/pi-posher/trust/poshifiers.json`
+- The options `Trust once` and `Reject` are session specific, and won't prompt again during the current session while the config remains unchanged.
+- `Trust always` stores the hash in `~/.pi/agent/extensions/pi-posher/trust/poshify.json`
 - Changing the project local config changes the hash and asks again to trust or reject
 - Non-interactive mode rejects project local config by default
 - Commands run as `cmd` & `args[]`, so each can be validated against shell injection
